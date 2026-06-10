@@ -114,6 +114,7 @@ DEFAULT_EDK2_VERSION = "v0.0.3"
 
 ovmf_version_raw = config.get("ovmf-version")
 if ovmf_version_raw is not None:
+    print("::warning::The `ovmf-version` field is not currently supported by Tinfoil infrastructure and may cause an attestation error during deployment.")
     EDK2_VERSION, OVMF_DIGEST = parse_pinned_name(str(ovmf_version_raw))
 else:
     EDK2_VERSION = DEFAULT_EDK2_VERSION
