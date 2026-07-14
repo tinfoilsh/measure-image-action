@@ -135,14 +135,17 @@ print("Measuring...")
 snp_measurement = measure_amd(CPUS, amd_ovmf, kernel_file, initrd_file, cmdline)
 tdx_measurement = measure_intel(CPUS, MEMORY, kernel_file, initrd_file, cmdline)
 
+# Disks attached to every launch besides the model disks: root, config,
+# and external config.
+BASE_DISK_COUNT = 3
+
 # Canonical VM shape descriptor: the launch dimensions that determine the
-# platform measurement. The config `memory` field is already in MiB. Disks
-# counts every attached disk (root, config, external config, one per model).
+# platform measurement. The config `memory` field is already in MiB.
 vm_shape = {
     "cpus": int(CPUS),
     "memory_mb": int(MEMORY),
     "gpus": int(config.get("gpus", 0)),
-    "disks": 3 + len(config.get("models", []) or []),
+    "disks": BASE_DISK_COUNT + len(config.get("models", []) or []),
 }
 
 deployment_cfg = {
