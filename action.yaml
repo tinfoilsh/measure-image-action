@@ -14,6 +14,14 @@ inputs:
     description: "Mark the GitHub release as the latest (default: not marked as latest)"
     required: false
     default: "false"
+  freshness-report-url:
+    description: "Controlplane endpoint notified after a successful release"
+    required: false
+    default: "https://api.tinfoil.sh/api/webhooks/freshness-report"
+  freshness-report-audience:
+    description: "GitHub OIDC audience expected by the freshness controlplane"
+    required: false
+    default: "tinfoilsh/freshness-witness"
 
 runs:
   using: "composite"
@@ -119,3 +127,40 @@ runs:
           $LATEST_FLAG \
           output/tinfoil-deployment.json \
           output/tinfoil.hash
+
+    - name: Report release for freshness witnessing
+      shell: bash
+      env:
+        FRESHNESS_REPORT_URL: ${{ inputs.freshness-report-url }}
+        FRESHNESS_REPORT_AUDIENCE: ${{ inputs.freshness-report-audience }}
+      run: |
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::warning::freshness report skipped because the calling workflow did not grant id-token: write"
+          exit 0
+        fi
+
+        encoded_audience=$(jq -rn --arg value "$FRESHNESS_REPORT_AUDIENCE" '$value | @uri')
+        if ! oidc_response=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${encoded_audience}"); then
+          echo "::warning::failed to request GitHub OIDC token for freshness reporting; the scheduled refresh remains active"
+          exit 0
+        fi
+        if ! oidc_token=$(jq -er '.value' <<<"$oidc_response"); then
+          echo "::warning::GitHub OIDC response did not contain a token; the scheduled refresh remains active"
+          exit 0
+        fi
+
+        response_file=$(mktemp)
+        trap 'rm -f "$response_file"' EXIT
+        status=$(curl -sS --connect-timeout 5 --max-time 30 \
+          --retry 5 --retry-all-errors --retry-delay 1 --retry-max-time 30 \
+          -o "$response_file" -w '%{http_code}' \
+          -H "Content-Type: application/json" \
+          -d "$(jq -nc --arg token "$oidc_token" '{oidc_token: $token}')" \
+          "$FRESHNESS_REPORT_URL") || status=000
+        if [[ "$status" != 2* ]]; then
+          echo "::warning::freshness report returned HTTP $status; the scheduled refresh remains active"
+          exit 0
+        fi
+        echo "Freshness refresh requested for ${GITHUB_REPOSITORY}"
