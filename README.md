@@ -27,6 +27,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+After publishing the release, the action uses the workflow's GitHub OIDC
+identity to request an immediate freshness-witness refresh. The notification
+is an acceleration only: failures are reported as warnings because the
+controlplane's scheduled refresh remains authoritative. Calling workflows
+should retain `id-token: write`, which is already required for attestation
+signing. Alternate deployments can override both `freshness-report-url` and
+the matching `freshness-report-audience`.
+
 ## Releasing a New Version
 
 Push a `build-v*` tag to trigger the automated pipeline:
