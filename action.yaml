@@ -133,7 +133,7 @@ runs:
       env:
         FRESHNESS_REPORT_URL: ${{ inputs.freshness-report-url }}
         FRESHNESS_REPORT_AUDIENCE: ${{ inputs.freshness-report-audience }}
-        RELEASE_TAG: ${{ github.ref_name }}
+        RELEASE_REF: ${{ github.ref_name }}
       run: |
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
           echo "::warning::freshness report skipped because the calling workflow did not grant id-token: write"
@@ -158,7 +158,7 @@ runs:
           --retry 5 --retry-all-errors --retry-delay 1 --retry-max-time 30 \
           -o "$response_file" -w '%{http_code}' \
           -H "Content-Type: application/json" \
-          -d "$(jq -nc --arg token "$oidc_token" --arg tag "$RELEASE_TAG" '{oidc_token: $token, tag: $tag}')" \
+          -d "$(jq -nc --arg token "$oidc_token" --arg tag "$RELEASE_REF" '{oidc_token: $token, tag: $tag}')" \
           "$FRESHNESS_REPORT_URL") || status=000
         if [[ "$status" != 2* ]]; then
           echo "::warning::freshness report returned HTTP $status; the scheduled refresh remains active"
