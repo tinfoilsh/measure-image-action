@@ -5,8 +5,7 @@ FROM golang:1.25.7-bookworm@sha256:58259daf0a27c150118663ef7452aa94d66a86d55e73b
 WORKDIR /validator
 COPY validator/go.mod validator/go.sum ./
 RUN go mod download
-COPY validator/main.go ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tinfoil-config-validator .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tinfoil-config-validator github.com/tinfoilsh/tinfoil-config/cmd/tinfoil-config
 
 FROM ubuntu@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
 
