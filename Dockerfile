@@ -1,4 +1,4 @@
-FROM golang:1.25.7-bookworm@sha256:58259daf0a27c150118663ef7452aa94d66a86d55e73b3443386146623f5364d AS orchestrator-builder
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS orchestrator-builder
 
 # The compiler image is digest-pinned and never copied into runtime.
 
