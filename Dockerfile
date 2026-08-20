@@ -1,3 +1,13 @@
+FROM golang:1.25.7-bookworm@sha256:58259daf0a27c150118663ef7452aa94d66a86d55e73b3443386146623f5364d AS config-validator-builder
+
+# The compiler image is digest-pinned and never copied into runtime.
+
+WORKDIR /validator
+COPY validator/go.mod validator/go.sum ./
+RUN go mod download
+COPY validator/main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tinfoil-config-validator .
+
 FROM ubuntu@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
 
 # Pin apt packages to a specific Ubuntu snapshot for reproducibility
@@ -25,5 +35,7 @@ RUN curl -L https://github.com/tinfoilsh/tdx-measure/releases/download/v0.0.6/td
 
 RUN python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --require-hashes -r /requirements.txt
+
+COPY --from=config-validator-builder /tinfoil-config-validator /usr/local/bin/tinfoil-config-validator
 
 ENTRYPOINT ["/opt/venv/bin/python", "/measure.py"]
