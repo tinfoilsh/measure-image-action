@@ -82,6 +82,7 @@ def verify_digest(file_path: str, expected_hex: str, label: str) -> None:
         )
 
 
+subprocess.run(["/usr/local/bin/tinfoil-config-validator", "/config.yml"], check=True)
 config = yaml.safe_load(open("/config.yml", "r"))
 
 CVM_VERSION, CVM_MANIFEST_DIGEST = parse_pinned_name(str(config["cvm-version"]))
