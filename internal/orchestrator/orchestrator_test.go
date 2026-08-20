@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -188,7 +189,7 @@ exit 1
 	for key := range metadata.BootInfo {
 		gotBootKeys = append(gotBootKeys, key)
 	}
-	sortStrings(gotBootKeys)
+	sort.Strings(gotBootKeys)
 	if !reflect.DeepEqual(gotBootKeys, wantBootKeys) {
 		t.Fatalf("boot_info keys = %#v", gotBootKeys)
 	}
@@ -312,12 +313,4 @@ func readLines(t *testing.T, filePath string) []string {
 		t.Fatal(err)
 	}
 	return strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n")
-}
-
-func sortStrings(values []string) {
-	for index := 1; index < len(values); index++ {
-		for current := index; current > 0 && values[current] < values[current-1]; current-- {
-			values[current], values[current-1] = values[current-1], values[current]
-		}
-	}
 }

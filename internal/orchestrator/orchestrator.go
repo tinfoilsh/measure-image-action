@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	cvmImageRepository = "tinfoilsh/cvmimage"
-	defaultEDK2Version = "v0.0.3"
-	baseDiskCount      = 3
+	cvmImageRepository    = "tinfoilsh/cvmimage"
+	defaultEDK2Version    = "v0.0.3"
+	baseDiskCount         = 3
+	artifactFetchAttempts = 4
 )
 
 // Runner contains the process and network boundaries used by the measurement
@@ -234,7 +235,7 @@ func (r *Runner) fetch(ctx context.Context, artifactURL string) (string, error) 
 		client = http.DefaultClient
 	}
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < artifactFetchAttempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL, nil)
 		if err != nil {
 			return "", fmt.Errorf("create artifact request: %w", err)

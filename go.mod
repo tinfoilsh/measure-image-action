@@ -2,6 +2,8 @@ module github.com/tinfoilsh/measure-image-action
 
 go 1.26.0
 
+toolchain go1.26.6
+
 require github.com/tinfoilsh/tinfoil-config v0.1.2
 
 require (
