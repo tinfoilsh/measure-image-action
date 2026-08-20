@@ -1,11 +1,13 @@
-FROM golang:1.25.7-bookworm@sha256:58259daf0a27c150118663ef7452aa94d66a86d55e73b3443386146623f5364d AS config-validator-builder
+FROM golang:1.25.7-bookworm@sha256:58259daf0a27c150118663ef7452aa94d66a86d55e73b3443386146623f5364d AS orchestrator-builder
 
 # The compiler image is digest-pinned and never copied into runtime.
 
-WORKDIR /validator
-COPY validator/go.mod validator/go.sum ./
+WORKDIR /src
+COPY go.mod go.sum ./
 RUN go mod download
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tinfoil-config-validator github.com/tinfoilsh/tinfoil-config/cmd/tinfoil-config
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /measure-image ./cmd/measure-image
 
 FROM ubuntu@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
 
@@ -15,7 +17,7 @@ RUN echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20250107
     echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20250107T000000Z noble-security main restricted universe multiverse" >> /etc/apt/sources.list
 
 WORKDIR /app
-COPY *.py requirements.txt /
+COPY requirements.txt /
 RUN mkdir -p /output /cache
 
 RUN apt-get update && apt-get install -y ca-certificates curl python3 python3-venv
@@ -32,9 +34,10 @@ RUN curl -L https://github.com/tinfoilsh/tdx-measure/releases/download/v0.0.6/td
     echo "d1bde7b36bdc6437140478428127809f16ac8f024cd08007a05ccdaa4044309e  tdx-measure" | sha256sum -c - && \
     chmod +x tdx-measure
 
+# sev-snp-measure remains an independently pinned external measurement tool.
 RUN python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --require-hashes -r /requirements.txt
 
-COPY --from=config-validator-builder /tinfoil-config-validator /usr/local/bin/tinfoil-config-validator
+COPY --from=orchestrator-builder /measure-image /usr/local/bin/measure-image
 
-ENTRYPOINT ["/opt/venv/bin/python", "/measure.py"]
+ENTRYPOINT ["/usr/local/bin/measure-image"]

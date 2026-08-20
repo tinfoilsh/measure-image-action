@@ -1,2 +1,3 @@
+# Explicitly pin the transitive cryptography runtime to a non-vulnerable release.
+cryptography==50.0.0
 sev-snp-measure==0.0.12
-pyyaml==6.0.3

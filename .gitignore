@@ -4,5 +4,4 @@ kernel
 OVMF.fd
 output/
 cache/
-__pycache__/
 config.yml

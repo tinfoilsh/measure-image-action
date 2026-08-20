@@ -35,6 +35,15 @@ should retain `id-token: write`, which is already required for attestation
 signing. Alternate deployments can override both `freshness-report-url` and
 the matching `freshness-report-audience`.
 
+## Measurement architecture
+
+The container uses a small Go binary for config validation, artifact download
+and verification, measurement-tool invocation, and output generation. The
+measurement implementations remain independently pinned external tools:
+`sev-snp-measure` for AMD SEV-SNP and `tdx-measure` for Intel TDX. This keeps
+the measurement boundary and output format stable while making the action's
+orchestration easier to inspect and test.
+
 ## Releasing a New Version
 
 Push a `build-v*` tag to trigger the automated pipeline:
