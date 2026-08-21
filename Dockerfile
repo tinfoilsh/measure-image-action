@@ -1,6 +1,7 @@
 FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS orchestrator-builder
 
-# The compiler image is digest-pinned and never copied into runtime.
+# The compiler image is digest-pinned. Only the compiled binary and its CA
+# bundle (used to bootstrap HTTPS for apt) are copied into runtime.
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -11,16 +12,27 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /measure-image ./cmd/me
 
 FROM ubuntu@sha256:c35e29c9450151419d9448b0fd75374fec4fff364a27f176fb458d472dfc9e54
 
-# Pin apt packages to a specific Ubuntu snapshot for reproducibility
-RUN echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20250107T000000Z noble main restricted universe multiverse" > /etc/apt/sources.list && \
-    echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20250107T000000Z noble-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/20250107T000000Z noble-security main restricted universe multiverse" >> /etc/apt/sources.list
+# Noble reads deb822 sources from ubuntu.sources. Replace that file rather than
+# adding a legacy sources.list alongside the moving default repositories.
+COPY --from=orchestrator-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN printf '%s\n' \
+      'Types: deb' \
+      'URIs: https://snapshot.ubuntu.com/ubuntu/20260820T000000Z' \
+      'Suites: noble noble-updates noble-security' \
+      'Components: main restricted universe multiverse' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      'Check-Valid-Until: no' \
+      > /etc/apt/sources.list.d/ubuntu.sources && \
+    rm -f /etc/apt/sources.list
 
 WORKDIR /app
 COPY requirements.txt /
 RUN mkdir -p /output /cache
 
-RUN apt-get update && apt-get install -y ca-certificates curl python3 python3-venv
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl python3 python3-venv && \
+    rm -rf /var/lib/apt/lists/*
 
 # Download and verify GitHub CLI binary
 RUN curl -L https://github.com/cli/cli/releases/download/v2.67.0/gh_2.67.0_linux_amd64.tar.gz -o gh.tar.gz && \
