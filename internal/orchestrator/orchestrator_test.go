@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	tinfoilconfig "github.com/tinfoilsh/tinfoil-config"
 )
 
 func TestParsePinnedName(t *testing.T) {
@@ -140,6 +142,31 @@ func TestDecodeMeasurementConfigRejectsMalformedVersionAndMultipleDocuments(t *t
 	legacyDocuments := []byte("cvm-version: 0.10.9\ncpus: 2\nmemory: 4096\n---\nextra: document\n")
 	if _, err := decodeMeasurementConfig(legacyDocuments); err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
 		t.Fatalf("multiple-document error = %v", err)
+	}
+}
+
+func TestDecodeMeasurementConfigRejectsInvalidMeasurementFields(t *testing.T) {
+	base := `cvm-version: 0.10.9
+cpus: 2
+memory: 4096
+`
+	tests := []struct {
+		name      string
+		config    string
+		wantError string
+	}{
+		{name: "missing cpus", config: "cvm-version: 0.10.9\nmemory: 4096\n", wantError: "cpus must be positive"},
+		{name: "zero memory", config: strings.Replace(base, "memory: 4096", "memory: 0", 1), wantError: "memory must be positive"},
+		{name: "negative GPUs", config: base + "gpus: -1\n", wantError: "gpus must be between 0 and 8"},
+		{name: "too many GPUs", config: base + "gpus: 9\n", wantError: "gpus must be between 0 and 8"},
+		{name: "too many model disks", config: base + "models:\n" + strings.Repeat("  - {}\n", tinfoilconfig.MaxModelDisks+1), wantError: "models must contain at most"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeMeasurementConfig([]byte(test.config)); err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("decodeMeasurementConfig() error = %v, want substring %q", err, test.wantError)
+			}
+		})
 	}
 }
 

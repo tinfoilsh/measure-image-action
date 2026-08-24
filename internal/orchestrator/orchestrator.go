@@ -219,49 +219,67 @@ func (r *Runner) Run(ctx context.Context) error {
 // the v0.11+ image line that implements it. Older images retain their legacy
 // YAML surface while still exposing the fields needed for measurement.
 func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
-	var header struct {
-		CVMVersion string `yaml:"cvm-version"`
-	}
-	if err := yaml.Unmarshal(configBytes, &header); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(configBytes))
+	var legacy legacyMeasurementConfig
+	if err := decoder.Decode(&legacy); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	strict, err := versionAtLeastChecked(header.CVMVersion, minCVMVersionStrictConfig)
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("parse config: multiple YAML documents")
+		}
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	strict, err := versionAtLeastChecked(legacy.CVMVersion, minCVMVersionStrictConfig)
 	if err != nil {
-		return nil, fmt.Errorf("invalid CVM version %q: %w", header.CVMVersion, err)
+		return nil, fmt.Errorf("invalid CVM version %q: %w", legacy.CVMVersion, err)
 	}
 	if strict {
 		config, err := tinfoilconfig.Decode(configBytes, tinfoilconfig.Options{})
 		if err != nil {
 			return nil, fmt.Errorf("validate config: %w", err)
 		}
-		return &measurementConfig{
+		measurement := &measurementConfig{
 			CVMVersion: config.CVMVersion,
 			CPUs:       config.CPUs,
 			Memory:     config.Memory,
 			GPUs:       config.GPUs,
 			ModelCount: len(config.Models),
-		}, nil
+		}
+		if err := validateMeasurementConfig(measurement); err != nil {
+			return nil, fmt.Errorf("validate config: %w", err)
+		}
+		return measurement, nil
 	}
 
-	decoder := yaml.NewDecoder(bytes.NewReader(configBytes))
-	var legacy legacyMeasurementConfig
-	if err := decoder.Decode(&legacy); err != nil {
-		return nil, fmt.Errorf("parse legacy config: %w", err)
-	}
-	var trailing yaml.Node
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return nil, errors.New("parse legacy config: multiple YAML documents")
-		}
-		return nil, fmt.Errorf("parse legacy config: %w", err)
-	}
-	return &measurementConfig{
+	measurement := &measurementConfig{
 		CVMVersion: legacy.CVMVersion,
 		CPUs:       legacy.CPUs,
 		Memory:     legacy.Memory,
 		GPUs:       legacy.GPUs,
 		ModelCount: len(legacy.Models),
-	}, nil
+	}
+	if err := validateMeasurementConfig(measurement); err != nil {
+		return nil, fmt.Errorf("validate legacy config: %w", err)
+	}
+	return measurement, nil
+}
+
+func validateMeasurementConfig(config *measurementConfig) error {
+	if config.CPUs < 1 {
+		return fmt.Errorf("cpus must be positive (got %d)", config.CPUs)
+	}
+	if config.Memory < 1 {
+		return fmt.Errorf("memory must be positive (got %d)", config.Memory)
+	}
+	if config.GPUs < 0 || config.GPUs > 8 {
+		return fmt.Errorf("gpus must be between 0 and 8 (got %d)", config.GPUs)
+	}
+	if config.ModelCount > tinfoilconfig.MaxModelDisks {
+		return fmt.Errorf("models must contain at most %d entries (got %d)", tinfoilconfig.MaxModelDisks, config.ModelCount)
+	}
+	return nil
 }
 
 // parseVersion extracts feature compatibility from an image version.
