@@ -44,6 +44,10 @@ measurement implementations remain independently pinned external tools:
 the measurement boundary and output format stable while making the action's
 orchestration easier to inspect and test.
 
+The shared strict workload validator applies to CVM image v0.11.0 and newer,
+matching tinfoild's launch contract. Older CVM images retain their legacy YAML
+surface and are parsed only for the fields required to reproduce measurement.
+
 ## Releasing a New Version
 
 Push a `build-v*` tag to trigger the automated pipeline:

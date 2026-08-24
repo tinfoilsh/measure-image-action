@@ -53,6 +53,96 @@ func TestParsePinnedName(t *testing.T) {
 	}
 }
 
+func TestVersionAtLeastChecked(t *testing.T) {
+	tests := []struct {
+		name      string
+		version   string
+		want      bool
+		wantError bool
+	}{
+		{name: "legacy", version: "0.10.9"},
+		{name: "boundary", version: "0.11.0", want: true},
+		{name: "prerelease contains new guest code", version: "0.11.0-rc.1", want: true},
+		{name: "digest pin", version: "0.11.0@sha256:" + strings.Repeat("a", 64), want: true},
+		{name: "v prefix and build suffix", version: "v0.12.0+local", want: true},
+		{name: "malformed", version: "local-build", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := versionAtLeastChecked(test.version, minCVMVersionStrictConfig)
+			if test.wantError {
+				if err == nil {
+					t.Fatal("versionAtLeastChecked() accepted malformed version")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("versionAtLeastChecked(%q) = %t, want %t", test.version, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeMeasurementConfigUsesCVMVersionBoundary(t *testing.T) {
+	legacy := []byte(`cvm-version: 0.10.9
+cpus: 8
+memory: 16384
+gpus: 1
+shim-version: 0.3.4
+models:
+  - name: model
+    legacy-field: accepted-by-the-guest
+containers:
+  - name: app
+    image: example.com/app:latest
+    models: [model]
+`)
+	config, err := decodeMeasurementConfig(legacy)
+	if err != nil {
+		t.Fatalf("legacy config rejected: %v", err)
+	}
+	wantLegacy := &measurementConfig{CVMVersion: "0.10.9", CPUs: 8, Memory: 16384, GPUs: 1, ModelCount: 1}
+	if !reflect.DeepEqual(config, wantLegacy) {
+		t.Fatalf("legacy config = %#v, want %#v", config, wantLegacy)
+	}
+
+	strictMutable := []byte(`cvm-version: 0.11.0
+cpus: 8
+memory: 16384
+shim:
+  upstream-port: 8080
+containers:
+  - name: app
+    image: example.com/app:latest
+`)
+	if _, err := decodeMeasurementConfig(strictMutable); err == nil || !strings.Contains(err.Error(), "immutable digest") {
+		t.Fatalf("strict mutable-image error = %v, want immutable-digest rejection", err)
+	}
+
+	strictValid := bytes.Replace(strictMutable, []byte("example.com/app:latest"), []byte("example.com/app@sha256:"+strings.Repeat("a", 64)), 1)
+	config, err = decodeMeasurementConfig(strictValid)
+	if err != nil {
+		t.Fatalf("strict config rejected: %v", err)
+	}
+	wantStrict := &measurementConfig{CVMVersion: "0.11.0", CPUs: 8, Memory: 16384}
+	if !reflect.DeepEqual(config, wantStrict) {
+		t.Fatalf("strict config = %#v, want %#v", config, wantStrict)
+	}
+}
+
+func TestDecodeMeasurementConfigRejectsMalformedVersionAndMultipleDocuments(t *testing.T) {
+	if _, err := decodeMeasurementConfig([]byte("cvm-version: local-build\n")); err == nil || !strings.Contains(err.Error(), "invalid CVM version") {
+		t.Fatalf("malformed-version error = %v", err)
+	}
+	legacyDocuments := []byte("cvm-version: 0.10.9\ncpus: 2\nmemory: 4096\n---\nextra: document\n")
+	if _, err := decodeMeasurementConfig(legacyDocuments); err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf("multiple-document error = %v", err)
+	}
+}
+
 func TestRunPreservesMeasurementContract(t *testing.T) {
 	temporaryDir := t.TempDir()
 	cacheDir := filepath.Join(temporaryDir, "cache")

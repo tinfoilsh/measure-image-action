@@ -21,13 +21,15 @@ import (
 	"strings"
 
 	tinfoilconfig "github.com/tinfoilsh/tinfoil-config"
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	cvmImageRepository    = "tinfoilsh/cvmimage"
-	defaultEDK2Version    = "v0.0.3"
-	baseDiskCount         = 3
-	artifactFetchAttempts = 4
+	cvmImageRepository        = "tinfoilsh/cvmimage"
+	defaultEDK2Version        = "v0.0.3"
+	minCVMVersionStrictConfig = "0.11.0"
+	baseDiskCount             = 3
+	artifactFetchAttempts     = 4
 )
 
 // Runner contains the process and network boundaries used by the measurement
@@ -89,14 +91,32 @@ type deployment struct {
 	Config         string          `json:"config"`
 }
 
+// measurementConfig is the version-independent subset of workload config
+// that contributes to image measurement and deployment metadata.
+type measurementConfig struct {
+	CVMVersion string
+	CPUs       int
+	Memory     int
+	GPUs       int
+	ModelCount int
+}
+
+type legacyMeasurementConfig struct {
+	CVMVersion string      `yaml:"cvm-version"`
+	CPUs       int         `yaml:"cpus"`
+	Memory     int         `yaml:"memory"`
+	GPUs       int         `yaml:"gpus"`
+	Models     []yaml.Node `yaml:"models"`
+}
+
 func (r *Runner) Run(ctx context.Context) error {
 	configBytes, err := os.ReadFile(r.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
-	config, err := tinfoilconfig.Decode(configBytes, tinfoilconfig.Options{})
+	config, err := decodeMeasurementConfig(configBytes)
 	if err != nil {
-		return fmt.Errorf("validate config: %w", err)
+		return err
 	}
 
 	cvmVersion, manifestDigest, err := parsePinnedName(config.CVMVersion)
@@ -170,7 +190,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			CPUs:     config.CPUs,
 			MemoryMB: config.Memory,
 			GPUs:     config.GPUs,
-			Disks:    baseDiskCount + len(config.Models),
+			Disks:    baseDiskCount + config.ModelCount,
 		},
 		Cmdline: cmdline,
 		Hashes:  json.RawMessage(manifestBytes),
@@ -193,6 +213,98 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("write deployment: %w", err)
 	}
 	return nil
+}
+
+// decodeMeasurementConfig applies the shared strict workload contract only to
+// the v0.11+ image line that implements it. Older images retain their legacy
+// YAML surface while still exposing the fields needed for measurement.
+func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
+	var header struct {
+		CVMVersion string `yaml:"cvm-version"`
+	}
+	if err := yaml.Unmarshal(configBytes, &header); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	strict, err := versionAtLeastChecked(header.CVMVersion, minCVMVersionStrictConfig)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CVM version %q: %w", header.CVMVersion, err)
+	}
+	if strict {
+		config, err := tinfoilconfig.Decode(configBytes, tinfoilconfig.Options{})
+		if err != nil {
+			return nil, fmt.Errorf("validate config: %w", err)
+		}
+		return &measurementConfig{
+			CVMVersion: config.CVMVersion,
+			CPUs:       config.CPUs,
+			Memory:     config.Memory,
+			GPUs:       config.GPUs,
+			ModelCount: len(config.Models),
+		}, nil
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader(configBytes))
+	var legacy legacyMeasurementConfig
+	if err := decoder.Decode(&legacy); err != nil {
+		return nil, fmt.Errorf("parse legacy config: %w", err)
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("parse legacy config: multiple YAML documents")
+		}
+		return nil, fmt.Errorf("parse legacy config: %w", err)
+	}
+	return &measurementConfig{
+		CVMVersion: legacy.CVMVersion,
+		CPUs:       legacy.CPUs,
+		Memory:     legacy.Memory,
+		GPUs:       legacy.GPUs,
+		ModelCount: len(legacy.Models),
+	}, nil
+}
+
+// parseVersion extracts feature compatibility from an image version.
+// Prerelease, build, and digest suffixes do not change which guest code is
+// present, matching tinfoild's launch-time compatibility gates.
+func parseVersion(version string) (int, int, int, error) {
+	original := version
+	version = strings.TrimPrefix(version, "v")
+	if index := strings.Index(version, "@"); index != -1 {
+		version = version[:index]
+	}
+	if index := strings.IndexAny(version, "-+"); index != -1 {
+		version = version[:index]
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, fmt.Errorf("invalid version: %s", original)
+	}
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	patch, patchErr := strconv.Atoi(parts[2])
+	if majorErr != nil || minorErr != nil || patchErr != nil || major < 0 || minor < 0 || patch < 0 {
+		return 0, 0, 0, fmt.Errorf("invalid version: %s", original)
+	}
+	return major, minor, patch, nil
+}
+
+func versionAtLeastChecked(version, minimum string) (bool, error) {
+	major, minor, patch, err := parseVersion(version)
+	if err != nil {
+		return false, err
+	}
+	minimumMajor, minimumMinor, minimumPatch, err := parseVersion(minimum)
+	if err != nil {
+		return false, fmt.Errorf("invalid minimum version %q: %w", minimum, err)
+	}
+	if major != minimumMajor {
+		return major > minimumMajor, nil
+	}
+	if minor != minimumMinor {
+		return minor > minimumMinor, nil
+	}
+	return patch >= minimumPatch, nil
 }
 
 func (r *Runner) fetchVerifiedArtifact(ctx context.Context, artifactURL, repository string) (string, error) {
