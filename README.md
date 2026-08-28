@@ -27,6 +27,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+For a private repository, also install the Tinfoil freshness wrapper as
+`.github/workflows/tinfoil-freshness.yml`. It is dispatched by the Tinfoil
+GitHub App and calls the reusable workflow in
+`tinfoilsh/freshness-witness/.github/workflows/private.yml@main`. The build and
+freshness attestations stay in this repository's private GitHub attestation
+store; no GitHub token is sent to an enclave or verifier.
+
 ## Measurement architecture
 
 The container uses a small Go binary for config validation, artifact download

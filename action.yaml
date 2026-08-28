@@ -81,7 +81,7 @@ runs:
         echo stdout=sha256:$(sha256sum output/tinfoil-deployment.json | cut -d ' ' -f 1 | tee output/tinfoil.hash) >> $GITHUB_OUTPUT
 
     - name: Attest
-      uses: actions/attest@7667f588f2f73a90cea6c7ac70e78266c4f76616 #v3.1.0
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 #v4.0.0
       id: attest
       with:
         subject-name: tinfoil-deployment.json
@@ -95,7 +95,7 @@ runs:
         cat output/release.md > output/release-notes.md
         echo "" >> output/release-notes.md
         echo "Digest: \`$(cat output/tinfoil.hash)\`" >> output/release-notes.md
-        echo "Sigstore Link: https://search.sigstore.dev/?hash=$(cat output/tinfoil.hash)" >> output/release-notes.md
+        echo "The source attestation is stored with this GitHub repository." >> output/release-notes.md
 
     - name: Create release
       shell: bash
