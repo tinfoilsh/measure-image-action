@@ -94,11 +94,12 @@ type deployment struct {
 // measurementConfig is the version-independent subset of workload config
 // that contributes to image measurement and deployment metadata.
 type measurementConfig struct {
-	CVMVersion string
-	CPUs       int
-	Memory     int
-	GPUs       int
-	ModelCount int
+	CVMVersion  string
+	CPUs        int
+	Memory      int
+	GPUs        int
+	ModelCount  int
+	VolumeCount int
 }
 
 type legacyMeasurementConfig struct {
@@ -190,7 +191,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			CPUs:     config.CPUs,
 			MemoryMB: config.Memory,
 			GPUs:     config.GPUs,
-			Disks:    baseDiskCount + config.ModelCount,
+			Disks:    baseDiskCount + config.ModelCount + config.VolumeCount,
 		},
 		Cmdline: cmdline,
 		Hashes:  json.RawMessage(manifestBytes),
@@ -241,11 +242,12 @@ func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
 			return nil, fmt.Errorf("validate config: %w", err)
 		}
 		measurement := &measurementConfig{
-			CVMVersion: config.CVMVersion,
-			CPUs:       config.CPUs,
-			Memory:     config.Memory,
-			GPUs:       config.GPUs,
-			ModelCount: len(config.Models),
+			CVMVersion:  config.CVMVersion,
+			CPUs:        config.CPUs,
+			Memory:      config.Memory,
+			GPUs:        config.GPUs,
+			ModelCount:  len(config.Models),
+			VolumeCount: len(config.Volumes),
 		}
 		if err := validateMeasurementConfig(measurement); err != nil {
 			return nil, fmt.Errorf("validate config: %w", err)
@@ -276,8 +278,8 @@ func validateMeasurementConfig(config *measurementConfig) error {
 	if config.GPUs < 0 || config.GPUs > 8 {
 		return fmt.Errorf("gpus must be between 0 and 8 (got %d)", config.GPUs)
 	}
-	if config.ModelCount > tinfoilconfig.MaxModelDisks {
-		return fmt.Errorf("models must contain at most %d entries (got %d)", tinfoilconfig.MaxModelDisks, config.ModelCount)
+	if disks := config.ModelCount + config.VolumeCount; disks > tinfoilconfig.MaxModelDisks {
+		return fmt.Errorf("models and volumes must declare at most %d disks (got %d)", tinfoilconfig.MaxModelDisks, disks)
 	}
 	return nil
 }

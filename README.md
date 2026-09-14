@@ -39,6 +39,8 @@ orchestration easier to inspect and test.
 The shared strict workload validator applies to CVM image v0.11.0 and newer,
 matching tinfoild's launch contract. Older CVM images retain their legacy YAML
 surface and are parsed only for the fields required to reproduce measurement.
+The emitted `vm_shape.disks` includes the three runtime disks plus one disk for
+each top-level model and volume.
 
 ## Releasing a New Version
 
