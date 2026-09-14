@@ -25,7 +25,6 @@ import (
 )
 
 const (
-	cvmImageRepository        = "tinfoilsh/cvmimage"
 	defaultEDK2Version        = "v0.0.3"
 	minCVMVersionStrictConfig = "0.11.0"
 	baseDiskCount             = 3
@@ -43,9 +42,8 @@ type Runner struct {
 	SNPMeasurePath string
 	TDXMeasurePath string
 
-	CVMImageReleaseBase  string
-	CVMImageArtifactBase string
-	EDK2ReleaseBase      string
+	GitHubBase      string
+	EDK2ReleaseBase string
 
 	HTTPClient *http.Client
 	Stdout     io.Writer
@@ -54,18 +52,17 @@ type Runner struct {
 
 func DefaultRunner() *Runner {
 	return &Runner{
-		ConfigPath:           "/config.yml",
-		CacheDir:             "/cache",
-		OutputDir:            "/output",
-		GHPath:               "gh",
-		SNPMeasurePath:       "/opt/venv/bin/sev-snp-measure",
-		TDXMeasurePath:       "/app/tdx-measure",
-		CVMImageReleaseBase:  "https://github.com/tinfoilsh/cvmimage/releases/download",
-		CVMImageArtifactBase: "https://images.tinfoil.sh/cvm",
-		EDK2ReleaseBase:      "https://github.com/tinfoilsh/edk2/releases/download",
-		HTTPClient:           http.DefaultClient,
-		Stdout:               os.Stdout,
-		Stderr:               os.Stderr,
+		ConfigPath:      "/config.yml",
+		CacheDir:        "/cache",
+		OutputDir:       "/output",
+		GHPath:          "gh",
+		SNPMeasurePath:  "/opt/venv/bin/sev-snp-measure",
+		TDXMeasurePath:  "/app/tdx-measure",
+		GitHubBase:      "https://github.com",
+		EDK2ReleaseBase: "https://github.com/tinfoilsh/edk2/releases/download",
+		HTTPClient:      http.DefaultClient,
+		Stdout:          os.Stdout,
+		Stderr:          os.Stderr,
 	}
 }
 
@@ -95,6 +92,7 @@ type deployment struct {
 // that contributes to image measurement and deployment metadata.
 type measurementConfig struct {
 	CVMVersion  string
+	Source      tinfoilconfig.CVMSource
 	CPUs        int
 	Memory      int
 	GPUs        int
@@ -124,8 +122,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("parse cvm-version: %w", err)
 	}
-	manifestURL := fmt.Sprintf("%s/v%s/tinfoil-inference-v%s-manifest.json", strings.TrimRight(r.CVMImageReleaseBase, "/"), cvmVersion, cvmVersion)
-	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, cvmImageRepository)
+	manifestURL := fmt.Sprintf("%s/%s/releases/download/v%s/tinfoil-inference-v%s-manifest.json", strings.TrimRight(r.GitHubBase, "/"), config.Source.Repo, cvmVersion, cvmVersion)
+	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, config.Source.Repo)
 	if err != nil {
 		return err
 	}
@@ -148,12 +146,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		return errors.New("parse cvm manifest: root, kernel, and initrd are required")
 	}
 
-	kernelURL := fmt.Sprintf("%s/tinfoil-inference-v%s.vmlinuz", strings.TrimRight(r.CVMImageArtifactBase, "/"), cvmVersion)
+	artifacts := strings.TrimRight(config.Source.Artifacts, "/")
+	kernelURL := fmt.Sprintf("%s/tinfoil-inference-v%s.vmlinuz", artifacts, cvmVersion)
 	kernelPath, err := r.fetch(ctx, kernelURL)
 	if err != nil {
 		return err
 	}
-	initrdURL := fmt.Sprintf("%s/tinfoil-inference-v%s.initrd", strings.TrimRight(r.CVMImageArtifactBase, "/"), cvmVersion)
+	initrdURL := fmt.Sprintf("%s/tinfoil-inference-v%s.initrd", artifacts, cvmVersion)
 	initrdPath, err := r.fetch(ctx, initrdURL)
 	if err != nil {
 		return err
@@ -206,7 +205,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := os.MkdirAll(r.OutputDir, 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	releaseNotes := fmt.Sprintf("SEV-SNP Measurement: `%s`\nTDX Measurement: `%s`\nInference Image Version: [`%s`](https://github.com/tinfoilsh/cvmimage/releases/tag/v%s)\n", snpMeasurement, pythonObjectRepr(tdxMeasurement), cvmVersion, cvmVersion)
+	releaseNotes := fmt.Sprintf("SEV-SNP Measurement: `%s`\nTDX Measurement: `%s`\nInference Image Version: [`%s`](https://github.com/%s/releases/tag/v%s)\n", snpMeasurement, pythonObjectRepr(tdxMeasurement), cvmVersion, config.Source.Repo, cvmVersion)
 	if err := writeFileAtomic(filepath.Join(r.OutputDir, "release.md"), []byte(releaseNotes)); err != nil {
 		return fmt.Errorf("write release notes: %w", err)
 	}
@@ -243,6 +242,7 @@ func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
 		}
 		measurement := &measurementConfig{
 			CVMVersion:  config.CVMVersion,
+			Source:      config.CVMSource.OrDefault(),
 			CPUs:        config.CPUs,
 			Memory:      config.Memory,
 			GPUs:        config.GPUs,
@@ -257,6 +257,7 @@ func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
 
 	measurement := &measurementConfig{
 		CVMVersion: legacy.CVMVersion,
+		Source:     tinfoilconfig.DefaultCVMSource,
 		CPUs:       legacy.CPUs,
 		Memory:     legacy.Memory,
 		GPUs:       legacy.GPUs,

@@ -42,6 +42,11 @@ surface and are parsed only for the fields required to reproduce measurement.
 The emitted `vm_shape.disks` includes the three runtime disks plus one disk for
 each top-level model and volume.
 
+For v0.11.0 and newer, `cvm-source` in the config selects the repository whose
+release carries the image manifest and the base URL serving its kernel and
+initrd. Without it, and for older images, the action uses `tinfoilsh/cvmimage`
+and `https://images.tinfoil.sh/cvm`.
+
 ## Releasing a New Version
 
 Push a `build-v*` tag to trigger the automated pipeline:
