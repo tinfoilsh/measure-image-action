@@ -46,6 +46,11 @@ RUN curl -L https://github.com/tinfoilsh/tdx-measure/releases/download/v0.0.6/td
     echo "d1bde7b36bdc6437140478428127809f16ac8f024cd08007a05ccdaa4044309e  tdx-measure" | sha256sum -c - && \
     chmod +x tdx-measure
 
+# Download and verify boot-shim binary
+RUN curl --fail --proto '=https' -L https://github.com/tinfoilsh/boot-shim/releases/download/v0.1.0/boot-shim -o boot-shim && \
+    echo "acedc9df0c116e860418b52da8c186412017d420430c881e81f0365319108fb2  boot-shim" | sha256sum -c - && \
+    chmod +x boot-shim
+
 # sev-snp-measure remains an independently pinned external measurement tool.
 RUN python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --require-hashes -r /requirements.txt
