@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -179,6 +180,7 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 	snpArgumentsPath := filepath.Join(temporaryDir, "snp-args")
 	tdxArgumentsPath := filepath.Join(temporaryDir, "tdx-args")
 	tdxMetadataPath := filepath.Join(temporaryDir, "tdx-metadata")
+	bootShimArgumentsPath := filepath.Join(temporaryDir, "boot-shim-args")
 
 	kernel := []byte("kernel fixture")
 	initrd := []byte("initrd fixture")
@@ -236,6 +238,33 @@ while [ "$#" -gt 0 ]; do
 done
 exit 1
 `)
+	// Echoes back the command line it was handed with the builder's own token
+	// appended, as the real one does, so the checks on it are exercised.
+	bootShimPath := writeExecutable(t, temporaryDir, "boot-shim", `#!/bin/sh
+printf '%s\n' "$@" >> "$BOOT_SHIM_ARGUMENTS_PATH"
+subcommand="$1"
+given=""
+prev=""
+for a in "$@"; do
+    if [ "$prev" = "--cmdline" ]; then given="$a"; fi
+    prev="$a"
+done
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+        shift
+        : > "$1"
+        if [ "$subcommand" = "build-snp" ]; then
+            printf '{"format_version":2,"platform":"sev-snp","command_line":"%s no5lvl","launch":{"measurement":"bbbb","policy":"0x30133"}}' "$given" > "$1.manifest.json"
+        else
+            printf '{"format_version":2,"platform":"tdx","command_line":"%s no5lvl","launch":{"mrtd":"cccc","rtmr0":"00"}}' "$given" > "$1.manifest.json"
+        fi
+        exit 0
+    fi
+    shift
+done
+exit 1
+`)
+	t.Setenv("BOOT_SHIM_ARGUMENTS_PATH", bootShimArgumentsPath)
 	t.Setenv("GH_ARGUMENTS_PATH", ghArgumentsPath)
 	t.Setenv("SNP_ARGUMENTS_PATH", snpArgumentsPath)
 	t.Setenv("TDX_ARGUMENTS_PATH", tdxArgumentsPath)
@@ -250,6 +279,7 @@ exit 1
 		GHPath:               ghPath,
 		SNPMeasurePath:       snpPath,
 		TDXMeasurePath:       tdxPath,
+		BootShimPath:         bootShimPath,
 		CVMImageReleaseBase:  server.URL + "/cvm",
 		CVMImageArtifactBase: server.URL + "/images",
 		EDK2ReleaseBase:      server.URL + "/edk2",
@@ -358,6 +388,57 @@ exit 1
 		t.Fatalf("manifest = %#v", gotManifest)
 	}
 
+	// The builder measures a command line composed here, not the firmware one:
+	// an IGVM guest needs different PCI options, and composing both in one
+	// place keeps the measured line a published value rather than the result of
+	// a rewrite somebody downstream has to reimplement.
+	// Spelled out rather than derived, so a change to how it is composed has to
+	// be made here too. The PCI options go last, where the launcher puts them.
+	igvmCmdline := fmt.Sprintf("readonly=on modprobe.blacklist=nouveau nouveau.modeset=0 root=/dev/mapper/root roothash=root-hash tinfoil-config-hash=%x pci=noacpi pcie_ports=compat", sha256.Sum256(configBytes))
+	if igvmCmdline == cmdline {
+		t.Fatal("the firmware and IGVM command lines are identical")
+	}
+	bootShimArguments := readLines(t, bootShimArgumentsPath)
+	wantSNPArguments := []string{
+		"build-snp",
+		"--kernel", filepath.Join(cacheDir, "tinfoil-inference-v0.11.0.vmlinuz"),
+		"--initramfs", filepath.Join(cacheDir, "tinfoil-inference-v0.11.0.initrd"),
+		"--ram", "4096M",
+		"--cmdline", igvmCmdline,
+		"--vcpus", "2",
+		"--output",
+	}
+	if !reflect.DeepEqual(bootShimArguments[:len(wantSNPArguments)], wantSNPArguments) {
+		t.Fatalf("boot-shim SNP arguments = %#v", bootShimArguments)
+	}
+	// TDX gets the same inputs; only the subcommand differs.
+	wantTDXArguments := append([]string{"build-tdx"}, wantSNPArguments[1:]...)
+	tdxStart := len(wantSNPArguments) + 1
+	if !reflect.DeepEqual(bootShimArguments[tdxStart:tdxStart+len(wantTDXArguments)], wantTDXArguments) {
+		t.Fatalf("boot-shim TDX arguments = %#v", bootShimArguments[tdxStart:])
+	}
+	if got.IGVM == nil {
+		t.Fatal("deployment carries no boot-shim measurement")
+	}
+	if !reflect.DeepEqual(got.IGVM.SNPLaunch, map[string]string{"measurement": "bbbb", "policy": "0x30133"}) {
+		t.Fatalf("boot-shim SNP launch = %#v", got.IGVM.SNPLaunch)
+	}
+	if !reflect.DeepEqual(got.IGVM.TDXLaunch, map[string]string{"mrtd": "cccc", "rtmr0": "00"}) {
+		t.Fatalf("boot-shim TDX launch = %#v", got.IGVM.TDXLaunch)
+	}
+	// What the builder reported measuring, not what it was asked to measure.
+	if got.IGVM.Cmdline != igvmCmdline+" no5lvl" {
+		t.Fatalf("boot-shim cmdline = %q", got.IGVM.Cmdline)
+	}
+	// The digest is published once, inside the launch object.
+	if !strings.Contains(string(deploymentBytes), `"snp_launch"`) || strings.Contains(string(deploymentBytes), `"tdx_mrtd"`) {
+		t.Fatal("the igvm block does not have the shape consumers are told to read")
+	}
+	// The firmware command line keeps its own PCI options.
+	if !strings.Contains(got.Cmdline, "pci=realloc,nocrs") {
+		t.Fatalf("firmware cmdline lost its PCI options: %q", got.Cmdline)
+	}
+
 	releaseBytes, err := os.ReadFile(filepath.Join(outputDir, "release.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -375,6 +456,120 @@ exit 1
 	}
 	if !strings.Contains(stdout.String(), "Manifest digest matches pin") {
 		t.Fatalf("stdout did not report manifest pin verification: %s", stdout.String())
+	}
+}
+
+// newRunnerForRun wires up a Run() that reaches the builder: the artifacts it
+// fetches, and stub tools for everything measured before boot-shim.
+func newRunnerForRun(t *testing.T) *Runner {
+	t.Helper()
+	dir := t.TempDir()
+	kernel, initrd := []byte("kernel fixture"), []byte("initrd fixture")
+	manifestBytes := []byte(fmt.Sprintf(`{"version":"0.11.0","root":"root-hash","initrd":"%x","kernel":"%x","raw":"raw-hash"}`, sha256.Sum256(initrd), sha256.Sum256(kernel)))
+	configPath := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`cvm-version: 0.11.0@sha256:%x
+cpus: 2
+memory: 4096
+shim:
+  upstream-port: 8080
+containers:
+  - name: app
+    image: example.com/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`, sha256.Sum256(manifestBytes))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cvm/v0.11.0/tinfoil-inference-v0.11.0-manifest.json":
+			_, _ = w.Write(manifestBytes)
+		case "/images/tinfoil-inference-v0.11.0.vmlinuz":
+			_, _ = w.Write(kernel)
+		case "/images/tinfoil-inference-v0.11.0.initrd":
+			_, _ = w.Write(initrd)
+		case "/edk2/v0.0.3/OVMF.fd":
+			_, _ = w.Write([]byte("ovmf fixture"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return &Runner{
+		ConfigPath:     configPath,
+		CacheDir:       filepath.Join(dir, "cache"),
+		OutputDir:      filepath.Join(dir, "output"),
+		GHPath:         writeExecutable(t, dir, "gh", "#!/bin/sh\nexit 0\n"),
+		SNPMeasurePath: writeExecutable(t, dir, "sev-snp-measure", "#!/bin/sh\nprintf '%s\\n' '"+strings.Repeat("a", 96)+"'\n"),
+		TDXMeasurePath: writeExecutable(t, dir, "tdx-measure", `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--json-file" ]; then shift; printf '%s' '{"rtmr1":"1111"}' > "$1"; exit 0; fi
+    shift
+done
+exit 1
+`),
+		CVMImageReleaseBase:  server.URL + "/cvm",
+		CVMImageArtifactBase: server.URL + "/images",
+		EDK2ReleaseBase:      server.URL + "/edk2",
+		HTTPClient:           server.Client(),
+		Stdout:               io.Discard,
+		Stderr:               io.Discard,
+	}
+}
+
+// A measurement that quietly goes missing on some releases is worse than a
+// release that stops, so the builder failing has to fail the run.
+func TestRunFailsWhenTheBuilderDoes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "exits nonzero",
+			script: "#!/bin/sh\nexit 2\n",
+			want:   "boot-shim build-snp",
+		},
+		{
+			name: "writes a manifest this code does not understand",
+			script: `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+        shift
+        printf '{"format_version":99,"platform":"sev-snp","command_line":"x","launch":{"measurement":"bbbb"}}' > "$1.manifest.json"
+        exit 0
+    fi
+    shift
+done
+exit 1
+`,
+			want: "format 99",
+		},
+		{
+			name: "measured a different command line",
+			script: `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+        shift
+        printf '{"format_version":2,"platform":"sev-snp","command_line":"something else","launch":{"measurement":"bbbb"}}' > "$1.manifest.json"
+        exit 0
+    fi
+    shift
+done
+exit 1
+`,
+			want: "does not start with the command line",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := newRunnerForRun(t)
+			runner.BootShimPath = writeExecutable(t, t.TempDir(), "boot-shim", test.script)
+			err := runner.Run(context.Background())
+			if err == nil {
+				t.Fatal("Run() succeeded despite the builder failing")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Run() error = %v, want it to mention %q", err, test.want)
+			}
+		})
 	}
 }
 

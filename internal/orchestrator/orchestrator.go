@@ -25,7 +25,17 @@ import (
 )
 
 const (
-	cvmImageRepository        = "tinfoilsh/cvmimage"
+	cvmImageRepository = "tinfoilsh/cvmimage"
+
+	// Firmware enumerates the bus before Linux starts; an IGVM guest boots
+	// with the root complex the image describes and nothing has run to assign
+	// BARs, so Linux is told to do it and to keep the windows the image
+	// measured rather than discard them. The options go last because that is
+	// where the launcher puts them, and a different position is a different
+	// command line and so a different measurement.
+	firmwarePCIOptions        = "pci=realloc,nocrs"
+	igvmPCIOptions            = "pci=noacpi pcie_ports=compat"
+	igvmManifestFormat        = 2
 	defaultEDK2Version        = "v0.0.3"
 	minCVMVersionStrictConfig = "0.11.0"
 	baseDiskCount             = 3
@@ -42,6 +52,7 @@ type Runner struct {
 	GHPath         string
 	SNPMeasurePath string
 	TDXMeasurePath string
+	BootShimPath   string
 
 	CVMImageReleaseBase  string
 	CVMImageArtifactBase string
@@ -60,6 +71,7 @@ func DefaultRunner() *Runner {
 		GHPath:               "gh",
 		SNPMeasurePath:       "/opt/venv/bin/sev-snp-measure",
 		TDXMeasurePath:       "/app/tdx-measure",
+		BootShimPath:         "/app/boot-shim",
 		CVMImageReleaseBase:  "https://github.com/tinfoilsh/cvmimage/releases/download",
 		CVMImageArtifactBase: "https://images.tinfoil.sh/cvm",
 		EDK2ReleaseBase:      "https://github.com/tinfoilsh/edk2/releases/download",
@@ -83,12 +95,33 @@ type vmShape struct {
 }
 
 type deployment struct {
-	SNPMeasurement string          `json:"snp_measurement"`
-	TDXMeasurement json.RawMessage `json:"tdx_measurement"`
-	VMShape        vmShape         `json:"vm_shape"`
-	Cmdline        string          `json:"cmdline"`
-	Hashes         json.RawMessage `json:"hashes"`
-	Config         string          `json:"config"`
+	SNPMeasurement string           `json:"snp_measurement"`
+	TDXMeasurement json.RawMessage  `json:"tdx_measurement"`
+	VMShape        vmShape          `json:"vm_shape"`
+	Cmdline        string           `json:"cmdline"`
+	Hashes         json.RawMessage  `json:"hashes"`
+	Config         string           `json:"config"`
+	IGVM           *igvmMeasurement `json:"igvm"`
+}
+
+// igvmMeasurement carries what the same deployment measures when it launches
+// from a single measured IGVM file instead of firmware. It is published beside
+// the firmware measurements, not instead of them: nothing consumes it yet, and
+// emitting it on every release is what allows the two to be compared over real
+// deployments before anything depends on the new one.
+//
+// The key names the launch, not the builder that computed it: the builder is an
+// implementation detail and this name sits in a signed predicate.
+//
+// Each platform's launch object holds every report field the image fixes, the
+// digest among them, so the digest is not repeated beside it: two copies in a
+// signed predicate is two things that can disagree. Read
+// snp_launch["measurement"] and tdx_launch["mrtd"]. Cmdline is the line the
+// builder reported measuring, checked against the one it was given.
+type igvmMeasurement struct {
+	SNPLaunch map[string]string `json:"snp_launch"`
+	TDXLaunch map[string]string `json:"tdx_launch"`
+	Cmdline   string            `json:"cmdline"`
 }
 
 // measurementConfig is the version-independent subset of workload config
@@ -171,7 +204,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	configHash := sha256.Sum256(configBytes)
-	cmdline := fmt.Sprintf("readonly=on pci=realloc,nocrs modprobe.blacklist=nouveau nouveau.modeset=0 root=/dev/mapper/root roothash=%s tinfoil-config-hash=%x", hashes.Root, configHash)
+	cmdline := fmt.Sprintf("readonly=on %s modprobe.blacklist=nouveau nouveau.modeset=0 root=/dev/mapper/root roothash=%s tinfoil-config-hash=%x", firmwarePCIOptions, hashes.Root, configHash)
+	igvmCmdline := igvmCommandLine(cmdline)
 	fmt.Fprintln(r.Stdout, "Measuring...")
 
 	snpMeasurement, err := r.measureSNP(ctx, config.CPUs, ovmfPath, kernelPath, initrdPath, cmdline)
@@ -179,6 +213,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 	tdxMeasurement, err := r.measureTDX(ctx, config.CPUs, config.Memory, kernelPath, initrdPath, cmdline)
+	if err != nil {
+		return err
+	}
+	igvmMeasured, err := r.measureBootShimBoth(ctx, config.CPUs, config.Memory, kernelPath, initrdPath, igvmCmdline)
 	if err != nil {
 		return err
 	}
@@ -195,6 +233,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Cmdline: cmdline,
 		Hashes:  json.RawMessage(manifestBytes),
 		Config:  base64.StdEncoding.EncodeToString(configBytes),
+		IGVM:    igvmMeasured,
 	}
 	deploymentBytes, err := json.MarshalIndent(result, "", "    ")
 	if err != nil {
@@ -395,6 +434,113 @@ func (r *Runner) fetch(ctx context.Context, artifactURL string) (string, error) 
 		return filePath, nil
 	}
 	return "", fmt.Errorf("fetch %s: %w", artifactURL, lastErr)
+}
+
+// igvmCommandLine turns the deployment's command line into the one an IGVM
+// guest boots with: the firmware PCI options dropped, and the IGVM ones
+// appended where the launcher appends them.
+func igvmCommandLine(cmdline string) string {
+	kept := make([]string, 0, len(strings.Fields(cmdline)))
+	for _, word := range strings.Fields(cmdline) {
+		if strings.HasPrefix(word, "pci=") || strings.HasPrefix(word, "pcie_ports=") {
+			continue
+		}
+		kept = append(kept, word)
+	}
+	return strings.Join(append(kept, igvmPCIOptions), " ")
+}
+
+// igvmManifest is the subset of the JSON boot-shim writes beside each image
+// that this action reads. The builder computes the digest from the image it
+// just laid out, so there is no separate calculator to keep in step.
+type igvmManifest struct {
+	FormatVersion int               `json:"format_version"`
+	Platform      string            `json:"platform"`
+	CommandLine   string            `json:"command_line"`
+	Launch        map[string]string `json:"launch"`
+}
+
+// measureBootShim builds one IGVM image and returns its manifest. The image is
+// a by-product of measuring it and is discarded; the launch host rebuilds it
+// from the same inputs, which is why the arguments here mirror what the
+// launcher passes.
+func (r *Runner) measureBootShim(ctx context.Context, subcommand, platform string, cpus, memoryMB int, kernelPath, initrdPath, cmdline, workDir string) (*igvmManifest, error) {
+	// One path per platform. A shared one lets a subcommand that exits without
+	// writing be measured from the other platform's leftover manifest.
+	output := filepath.Join(workDir, platform+".igvm")
+	args := []string{
+		subcommand,
+		"--kernel", kernelPath,
+		"--initramfs", initrdPath,
+		"--ram", fmt.Sprintf("%dM", memoryMB),
+		"--cmdline", cmdline,
+		"--vcpus", strconv.Itoa(cpus),
+		"--output", output,
+	}
+	command := exec.CommandContext(ctx, r.BootShimPath, args...)
+	// Diagnostics stream to the log, so the error carries the exit status; once
+	// Stderr is set, asking Output() for stderr as well returns nothing.
+	command.Stderr = r.Stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("boot-shim %s: %w", subcommand, err)
+	}
+	manifestBytes, err := os.ReadFile(output + ".manifest.json")
+	if err != nil {
+		return nil, fmt.Errorf("boot-shim %s wrote no manifest: %w", subcommand, err)
+	}
+	// The runner holds these in RAM and each embeds a kernel and an initrd, so
+	// the image goes as soon as its manifest has been read.
+	_ = os.Remove(output)
+	var parsed igvmManifest
+	if err := json.Unmarshal(manifestBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("parse boot-shim %s manifest: %w", subcommand, err)
+	}
+	if parsed.FormatVersion != igvmManifestFormat {
+		return nil, fmt.Errorf("boot-shim %s manifest is format %d, expected %d", subcommand, parsed.FormatVersion, igvmManifestFormat)
+	}
+	if parsed.Platform != platform {
+		return nil, fmt.Errorf("boot-shim %s measured platform %q, expected %q", subcommand, parsed.Platform, platform)
+	}
+	// The builder appends what the image requires and otherwise measures the
+	// line it was handed, so anything else means it measured a different guest.
+	if !strings.HasPrefix(parsed.CommandLine, cmdline) {
+		return nil, fmt.Errorf("boot-shim %s measured %q, which does not start with the command line it was given", subcommand, parsed.CommandLine)
+	}
+	if len(parsed.Launch) == 0 {
+		return nil, fmt.Errorf("boot-shim %s published no launch values", subcommand)
+	}
+	return &parsed, nil
+}
+
+// measureBootShimBoth measures the deployment on both platforms. A failure is
+// fatal rather than a dropped field: a measurement that silently goes missing
+// on some releases is worse than a release that stops until someone looks.
+func (r *Runner) measureBootShimBoth(ctx context.Context, cpus, memoryMB int, kernelPath, initrdPath, cmdline string) (*igvmMeasurement, error) {
+	workDir, err := os.MkdirTemp("", "boot-shim-")
+	if err != nil {
+		return nil, fmt.Errorf("create boot-shim work directory: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+
+	snp, err := r.measureBootShim(ctx, "build-snp", "sev-snp", cpus, memoryMB, kernelPath, initrdPath, cmdline, workDir)
+	if err != nil {
+		return nil, err
+	}
+	tdx, err := r.measureBootShim(ctx, "build-tdx", "tdx", cpus, memoryMB, kernelPath, initrdPath, cmdline, workDir)
+	if err != nil {
+		return nil, err
+	}
+	if snp.Launch["measurement"] == "" {
+		return nil, errors.New("boot-shim published no SEV-SNP launch measurement")
+	}
+	if tdx.Launch["mrtd"] == "" {
+		return nil, errors.New("boot-shim published no TDX measurement")
+	}
+	return &igvmMeasurement{
+		SNPLaunch: snp.Launch,
+		TDXLaunch: tdx.Launch,
+		Cmdline:   snp.CommandLine,
+	}, nil
 }
 
 func (r *Runner) measureSNP(ctx context.Context, cpus int, ovmfPath, kernelPath, initrdPath, cmdline string) (string, error) {
