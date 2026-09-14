@@ -146,12 +146,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		return errors.New("parse cvm manifest: root, kernel, and initrd are required")
 	}
 
-	kernelURL := fmt.Sprintf("%s/tinfoil-inference-v%s.vmlinuz", strings.TrimRight(config.Source.Artifacts, "/"), cvmVersion)
+	artifacts := strings.TrimRight(config.Source.Artifacts, "/")
+	kernelURL := fmt.Sprintf("%s/tinfoil-inference-v%s.vmlinuz", artifacts, cvmVersion)
 	kernelPath, err := r.fetch(ctx, kernelURL)
 	if err != nil {
 		return err
 	}
-	initrdURL := fmt.Sprintf("%s/tinfoil-inference-v%s.initrd", strings.TrimRight(config.Source.Artifacts, "/"), cvmVersion)
+	initrdURL := fmt.Sprintf("%s/tinfoil-inference-v%s.initrd", artifacts, cvmVersion)
 	initrdPath, err := r.fetch(ctx, initrdURL)
 	if err != nil {
 		return err

@@ -90,6 +90,9 @@ func TestVersionAtLeastChecked(t *testing.T) {
 
 func TestDecodeMeasurementConfigUsesCVMVersionBoundary(t *testing.T) {
 	legacy := []byte(`cvm-version: 0.10.9
+cvm-source:
+  repo: example/cvmimage
+  artifacts: https://images.example.com/cvm
 cpus: 8
 memory: 16384
 gpus: 1
