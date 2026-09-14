@@ -159,7 +159,7 @@ memory: 4096
 		{name: "zero memory", config: strings.Replace(base, "memory: 4096", "memory: 0", 1), wantError: "memory must be positive"},
 		{name: "negative GPUs", config: base + "gpus: -1\n", wantError: "gpus must be between 0 and 8"},
 		{name: "too many GPUs", config: base + "gpus: 9\n", wantError: "gpus must be between 0 and 8"},
-		{name: "too many model disks", config: base + "models:\n" + strings.Repeat("  - {}\n", tinfoilconfig.MaxModelDisks+1), wantError: "models must contain at most"},
+		{name: "too many model disks", config: base + "models:\n" + strings.Repeat("  - {}\n", tinfoilconfig.MaxModelDisks+1), wantError: "models and volumes must declare at most"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -190,11 +190,16 @@ memory: 4096
 gpus: 1
 shim:
   upstream-port: 8080
+models:
+  - repo: example/model@revision
+volumes:
+  - name: workspace
 containers:
   - name: app
     image: example.com/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     runtime: nvidia
     gpus: all
+    volumes: [workspace:/workspace]
 `, manifestDigest))
 	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
 		t.Fatal(err)
@@ -337,7 +342,7 @@ exit 1
 	if !reflect.DeepEqual(gotTDX, map[string]string{"rtmr1": "1111", "rtmr2": "2222"}) {
 		t.Fatalf("TDX measurement = %#v", gotTDX)
 	}
-	if got.VMShape != (vmShape{CPUs: 2, MemoryMB: 4096, GPUs: 1, Disks: 3}) {
+	if got.VMShape != (vmShape{CPUs: 2, MemoryMB: 4096, GPUs: 1, Disks: 5}) {
 		t.Fatalf("VM shape = %#v", got.VMShape)
 	}
 	if got.Cmdline != cmdline || got.Config != base64.StdEncoding.EncodeToString(configBytes) {
