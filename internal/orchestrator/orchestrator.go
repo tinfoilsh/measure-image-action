@@ -25,7 +25,10 @@ import (
 )
 
 const (
-	defaultEDK2Version        = "v0.0.3"
+	defaultEDK2Version        = "v0.0.4"
+	defaultEDK2SHA256         = "78c890175928167a1bc095d4bf3bb4ad81de80cd7e4e9e683477fc359119c1c4"
+	componentArtifactType     = "https://tinfoil.sh/predicate/component-artifact/v1"
+	buildProvenanceType       = "https://slsa.dev/provenance/v1"
 	minCVMVersionStrictConfig = "0.11.0"
 	baseDiskCount             = 3
 	artifactFetchAttempts     = 4
@@ -44,6 +47,7 @@ type Runner struct {
 
 	GitHubBase      string
 	EDK2ReleaseBase string
+	EDK2SHA256      string
 
 	HTTPClient *http.Client
 	Stdout     io.Writer
@@ -60,6 +64,7 @@ func DefaultRunner() *Runner {
 		TDXMeasurePath:  "/app/tdx-measure",
 		GitHubBase:      "https://github.com",
 		EDK2ReleaseBase: "https://github.com/tinfoilsh/edk2/releases/download",
+		EDK2SHA256:      defaultEDK2SHA256,
 		HTTPClient:      http.DefaultClient,
 		Stdout:          os.Stdout,
 		Stderr:          os.Stderr,
@@ -82,10 +87,21 @@ type vmShape struct {
 type deployment struct {
 	SNPMeasurement string          `json:"snp_measurement"`
 	TDXMeasurement json.RawMessage `json:"tdx_measurement"`
+	Firmware       firmware        `json:"firmware"`
 	VMShape        vmShape         `json:"vm_shape"`
 	Cmdline        string          `json:"cmdline"`
 	Hashes         json.RawMessage `json:"hashes"`
 	Config         string          `json:"config"`
+}
+
+type firmware struct {
+	SEVSNP firmwareArtifact `json:"sev_snp"`
+}
+
+type firmwareArtifact struct {
+	Type    string `json:"type"`
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
 }
 
 // measurementConfig is the version-independent subset of workload config
@@ -123,12 +139,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("parse cvm-version: %w", err)
 	}
 	manifestURL := fmt.Sprintf("%s/%s/releases/download/v%s/tinfoil-inference-v%s-manifest.json", strings.TrimRight(r.GitHubBase, "/"), config.Source.Repo, cvmVersion, cvmVersion)
-	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, config.Source.Repo)
+	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, config.Source.Repo, buildProvenanceType)
 	if err != nil {
 		return err
 	}
 	if manifestDigest != "" {
-		if err := verifyDigest(manifestPath, manifestDigest, "cvm manifest"); err != nil {
+		if _, err := verifyDigest(manifestPath, manifestDigest, "cvm manifest"); err != nil {
 			return err
 		}
 		fmt.Fprintf(r.Stdout, "Manifest digest matches pin: sha256:%s\n", manifestDigest)
@@ -157,15 +173,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyDigest(kernelPath, hashes.Kernel, "kernel"); err != nil {
+	if _, err := verifyDigest(kernelPath, hashes.Kernel, "kernel"); err != nil {
 		return err
 	}
-	if err := verifyDigest(initrdPath, hashes.Initrd, "initrd"); err != nil {
+	if _, err := verifyDigest(initrdPath, hashes.Initrd, "initrd"); err != nil {
 		return err
 	}
 
 	ovmfURL := fmt.Sprintf("%s/%s/OVMF.fd", strings.TrimRight(r.EDK2ReleaseBase, "/"), defaultEDK2Version)
-	ovmfPath, err := r.fetch(ctx, ovmfURL)
+	ovmfPath, err := r.fetchVerifiedArtifact(ctx, ovmfURL, "tinfoilsh/edk2", componentArtifactType)
+	if err != nil {
+		return err
+	}
+	ovmfDigest, err := verifyDigest(ovmfPath, r.EDK2SHA256, "SEV-SNP OVMF")
 	if err != nil {
 		return err
 	}
@@ -186,6 +206,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	result := deployment{
 		SNPMeasurement: snpMeasurement,
 		TDXMeasurement: tdxMeasurement,
+		Firmware: firmware{SEVSNP: firmwareArtifact{
+			Type:    "ovmf",
+			Version: defaultEDK2Version,
+			SHA256:  ovmfDigest,
+		}},
 		VMShape: vmShape{
 			CPUs:     config.CPUs,
 			MemoryMB: config.Memory,
@@ -328,12 +353,12 @@ func versionAtLeastChecked(version, minimum string) (bool, error) {
 	return patch >= minimumPatch, nil
 }
 
-func (r *Runner) fetchVerifiedArtifact(ctx context.Context, artifactURL, repository string) (string, error) {
+func (r *Runner) fetchVerifiedArtifact(ctx context.Context, artifactURL, repository, predicateType string) (string, error) {
 	filePath, err := r.fetch(ctx, artifactURL)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, r.GHPath, "attestation", "verify", filePath, "-R", repository, "--deny-self-hosted-runners")
+	cmd := exec.CommandContext(ctx, r.GHPath, "attestation", "verify", filePath, "-R", repository, "--deny-self-hosted-runners", "--predicate-type", predicateType)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("attestation verification failed for %s: %s: %w", filePath, strings.TrimSpace(string(output)), err)
@@ -351,14 +376,18 @@ func (r *Runner) fetch(ctx context.Context, artifactURL string) (string, error) 
 	if name == "." || name == "/" || name == "" {
 		return "", fmt.Errorf("artifact URL has no file name: %q", artifactURL)
 	}
-	filePath := filepath.Join(r.CacheDir, name)
+	// Artifacts from different releases or repositories can have the same name
+	// (notably OVMF.fd). A basename-only cache can measure the wrong firmware.
+	cacheKey := sha256.Sum256([]byte(artifactURL))
+	cacheDir := filepath.Join(r.CacheDir, hex.EncodeToString(cacheKey[:]))
+	filePath := filepath.Join(cacheDir, name)
 	if _, err := os.Stat(filePath); err == nil {
 		fmt.Fprintf(r.Stdout, "Using cached file %s\n", filePath)
 		return filePath, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("inspect cached artifact %s: %w", filePath, err)
 	}
-	if err := os.MkdirAll(r.CacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return "", fmt.Errorf("create cache directory: %w", err)
 	}
 	fmt.Fprintf(r.Stdout, "Fetching %s...\n", artifactURL)
@@ -514,21 +543,21 @@ func parsePinnedName(value string) (string, string, error) {
 	return name, hexDigest, nil
 }
 
-func verifyDigest(filePath, expected, label string) error {
+func verifyDigest(filePath, expected, label string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("hash %s: %w", label, err)
+		return "", fmt.Errorf("hash %s: %w", label, err)
 	}
 	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return fmt.Errorf("hash %s: %w", label, err)
+		return "", fmt.Errorf("hash %s: %w", label, err)
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if actual != expected {
-		return fmt.Errorf("%s digest mismatch: expected sha256:%s, got sha256:%s", label, expected, actual)
+		return "", fmt.Errorf("%s digest mismatch: expected sha256:%s, got sha256:%s", label, expected, actual)
 	}
-	return nil
+	return actual, nil
 }
 
 func writeReaderAtomic(filePath string, source io.Reader) error {

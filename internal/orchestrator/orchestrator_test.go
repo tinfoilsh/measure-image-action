@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	tinfoilconfig "github.com/tinfoilsh/tinfoil-config"
@@ -180,11 +182,13 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 	configPath := filepath.Join(temporaryDir, "config.yml")
 	ghArgumentsPath := filepath.Join(temporaryDir, "gh-args")
 	snpArgumentsPath := filepath.Join(temporaryDir, "snp-args")
+	measuredOVMFPath := filepath.Join(temporaryDir, "measured-ovmf")
 	tdxArgumentsPath := filepath.Join(temporaryDir, "tdx-args")
 	tdxMetadataPath := filepath.Join(temporaryDir, "tdx-metadata")
 
 	kernel := []byte("kernel fixture")
 	initrd := []byte("initrd fixture")
+	ovmf := []byte("ovmf fixture\x00\xff")
 	manifestBytes := []byte(fmt.Sprintf(`{"version":"0.11.0","root":"root-hash","initrd":"%x","kernel":"%x","raw":"raw-hash"}`, sha256.Sum256(initrd), sha256.Sum256(kernel)))
 	manifestDigest := sha256.Sum256(manifestBytes)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -195,8 +199,8 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 			_, _ = writer.Write(kernel)
 		case "/images/tinfoil-inference-v0.11.0.initrd":
 			_, _ = writer.Write(initrd)
-		case "/edk2/v0.0.3/OVMF.fd":
-			_, _ = writer.Write([]byte("ovmf fixture"))
+		case "/edk2/v0.0.4/OVMF.fd":
+			_, _ = writer.Write(ovmf)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -228,10 +232,17 @@ containers:
 	}
 
 	ghPath := writeExecutable(t, temporaryDir, "gh", `#!/bin/sh
-printf '%s\n' "$@" > "$GH_ARGUMENTS_PATH"
+printf '%s\n' "$@" >> "$GH_ARGUMENTS_PATH"
 `)
 	snpPath := writeExecutable(t, temporaryDir, "sev-snp-measure", `#!/bin/sh
 printf '%s\n' "$@" > "$SNP_ARGUMENTS_PATH"
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--ovmf" ]; then
+        cp "$2" "$SNP_OVMF_PATH"
+        break
+    fi
+    shift
+done
 printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 `)
 	tdxPath := writeExecutable(t, temporaryDir, "tdx-measure", `#!/bin/sh
@@ -249,6 +260,7 @@ exit 1
 `)
 	t.Setenv("GH_ARGUMENTS_PATH", ghArgumentsPath)
 	t.Setenv("SNP_ARGUMENTS_PATH", snpArgumentsPath)
+	t.Setenv("SNP_OVMF_PATH", measuredOVMFPath)
 	t.Setenv("TDX_ARGUMENTS_PATH", tdxArgumentsPath)
 	t.Setenv("TDX_METADATA_PATH", tdxMetadataPath)
 
@@ -263,6 +275,7 @@ exit 1
 		TDXMeasurePath:  tdxPath,
 		GitHubBase:      server.URL,
 		EDK2ReleaseBase: server.URL + "/edk2",
+		EDK2SHA256:      fmt.Sprintf("%x", sha256.Sum256(ovmf)),
 		HTTPClient:      server.Client(),
 		Stdout:          &stdout,
 		Stderr:          &stderr,
@@ -270,10 +283,19 @@ exit 1
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v\nstderr: %s", err, stderr.String())
 	}
+	cachePath := func(relativeURL string) string {
+		return filepath.Join(cacheDir, fmt.Sprintf("%x", sha256.Sum256([]byte(server.URL+relativeURL))), filepath.Base(relativeURL))
+	}
+	manifestPath := cachePath("/example/cvmimage/releases/download/v0.11.0/tinfoil-inference-v0.11.0-manifest.json")
+	ovmfPath := cachePath("/edk2/v0.0.4/OVMF.fd")
+	kernelPath := cachePath("/images/tinfoil-inference-v0.11.0.vmlinuz")
+	initrdPath := cachePath("/images/tinfoil-inference-v0.11.0.initrd")
 
 	assertLines(t, ghArgumentsPath, []string{
-		"attestation", "verify", filepath.Join(cacheDir, "tinfoil-inference-v0.11.0-manifest.json"),
-		"-R", "example/cvmimage", "--deny-self-hosted-runners",
+		"attestation", "verify", manifestPath,
+		"-R", "example/cvmimage", "--deny-self-hosted-runners", "--predicate-type", "https://slsa.dev/provenance/v1",
+		"attestation", "verify", ovmfPath,
+		"-R", "tinfoilsh/edk2", "--deny-self-hosted-runners", "--predicate-type", "https://tinfoil.sh/predicate/component-artifact/v1",
 	})
 	cmdline := fmt.Sprintf("readonly=on pci=realloc,nocrs modprobe.blacklist=nouveau nouveau.modeset=0 root=/dev/mapper/root roothash=root-hash tinfoil-config-hash=%x", sha256.Sum256(configBytes))
 	assertLines(t, snpArgumentsPath, []string{
@@ -281,9 +303,9 @@ exit 1
 		"--vcpus", "2",
 		"--vcpu-type", "EPYC-v4",
 		"--vmm-type", "QEMU",
-		"--ovmf", filepath.Join(cacheDir, "OVMF.fd"),
-		"--kernel", filepath.Join(cacheDir, "tinfoil-inference-v0.11.0.vmlinuz"),
-		"--initrd", filepath.Join(cacheDir, "tinfoil-inference-v0.11.0.initrd"),
+		"--ovmf", ovmfPath,
+		"--kernel", kernelPath,
+		"--initrd", initrdPath,
 		"--append", cmdline,
 		"--guest-features", "0x1",
 		"--output-format", "hex",
@@ -321,8 +343,8 @@ exit 1
 		t.Fatalf("boot_info keys = %#v", gotBootKeys)
 	}
 	wantDirect := map[string]string{
-		"kernel":  filepath.Join(cacheDir, "tinfoil-inference-v0.11.0.vmlinuz"),
-		"initrd":  filepath.Join(cacheDir, "tinfoil-inference-v0.11.0.initrd"),
+		"kernel":  kernelPath,
+		"initrd":  initrdPath,
 		"cmdline": cmdline,
 	}
 	if !reflect.DeepEqual(metadata.Direct, wantDirect) {
@@ -339,6 +361,24 @@ exit 1
 	}
 	if got.SNPMeasurement != strings.Repeat("a", 96) {
 		t.Fatalf("SNP measurement = %q", got.SNPMeasurement)
+	}
+	// Decode the public wire keys independently of the emitter's Go types and
+	// check the hash against the bytes actually received by the measurement tool.
+	var wireMetadata struct {
+		Firmware map[string]map[string]string `json:"firmware"`
+	}
+	if err := json.Unmarshal(deploymentBytes, &wireMetadata); err != nil {
+		t.Fatal(err)
+	}
+	measuredOVMF, err := os.ReadFile(measuredOVMFPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFirmware := map[string]map[string]string{"sev_snp": {
+		"type": "ovmf", "version": "v0.0.4", "sha256": fmt.Sprintf("%x", sha256.Sum256(measuredOVMF)),
+	}}
+	if !reflect.DeepEqual(wireMetadata.Firmware, wantFirmware) {
+		t.Fatalf("firmware metadata = %#v, want %#v", wireMetadata.Firmware, wantFirmware)
 	}
 	var gotTDX map[string]string
 	if err := json.Unmarshal(got.TDXMeasurement, &gotTDX); err != nil {
@@ -413,6 +453,126 @@ containers:
 	}
 	if _, statErr := os.Stat(runner.CacheDir); !os.IsNotExist(statErr) {
 		t.Fatalf("cache was touched before validation: %v", statErr)
+	}
+}
+
+func TestRunRejectsUnverifiedFirmwareBeforeMeasurement(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		missing      bool
+		badSignature bool
+		wrongDigest  bool
+		corruptCache bool
+		wantError    string
+	}{
+		{name: "unavailable release", missing: true, wantError: "HTTP 404"},
+		{name: "failed attestation", badSignature: true, wantError: "attestation verification failed"},
+		{name: "download differs from pin", wrongDigest: true, wantError: "SEV-SNP OVMF digest mismatch"},
+		{name: "corrupt cached firmware", corruptCache: true, wantError: "SEV-SNP OVMF digest mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			temporaryDir := t.TempDir()
+			kernel, initrd, ovmf := []byte("kernel"), []byte("initrd"), []byte("ovmf")
+			manifestBytes := []byte(fmt.Sprintf(`{"root":"root","kernel":"%x","initrd":"%x"}`, sha256.Sum256(kernel), sha256.Sum256(initrd)))
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch filepath.Base(r.URL.Path) {
+				case "tinfoil-inference-v0.11.0-manifest.json":
+					_, _ = w.Write(manifestBytes)
+				case "tinfoil-inference-v0.11.0.vmlinuz":
+					_, _ = w.Write(kernel)
+				case "tinfoil-inference-v0.11.0.initrd":
+					_, _ = w.Write(initrd)
+				case "OVMF.fd":
+					if test.missing {
+						http.NotFound(w, r)
+						return
+					}
+					_, _ = w.Write(ovmf)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			config := fmt.Sprintf("cvm-version: 0.11.0\ncvm-source:\n  repo: example/cvmimage\n  artifacts: %s/images\ncpus: 2\nmemory: 4096\nshim:\n  upstream-port: 8080\ncontainers:\n  - name: app\n    image: example.com/app@sha256:%s\n", server.URL, strings.Repeat("a", 64))
+			runner := DefaultRunner()
+			runner.ConfigPath = filepath.Join(temporaryDir, "config.yml")
+			if err := os.WriteFile(runner.ConfigPath, []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runner.CacheDir = filepath.Join(temporaryDir, "cache")
+			runner.OutputDir = filepath.Join(temporaryDir, "output")
+			runner.GitHubBase = server.URL
+			runner.EDK2ReleaseBase = server.URL + "/edk2"
+			runner.EDK2SHA256 = fmt.Sprintf("%x", sha256.Sum256(ovmf))
+			runner.HTTPClient = server.Client()
+			runner.Stdout, runner.Stderr = io.Discard, io.Discard
+			ghScript := "#!/bin/sh\nexit 0\n"
+			if test.badSignature {
+				ghScript = "#!/bin/sh\ncase \"$3\" in */OVMF.fd) exit 1;; esac\n"
+			}
+			runner.GHPath = writeExecutable(t, temporaryDir, "gh", ghScript)
+			toolMarker := filepath.Join(temporaryDir, "measurement-ran")
+			t.Setenv("MEASUREMENT_MARKER", toolMarker)
+			runner.SNPMeasurePath = writeExecutable(t, temporaryDir, "measure", "#!/bin/sh\ntouch \"$MEASUREMENT_MARKER\"\nexit 1\n")
+			runner.TDXMeasurePath = runner.SNPMeasurePath
+			if test.wrongDigest {
+				runner.EDK2SHA256 = strings.Repeat("0", 64)
+			}
+			if test.corruptCache {
+				firmwarePath, err := runner.fetch(context.Background(), runner.EDK2ReleaseBase+"/v0.0.4/OVMF.fd")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(firmwarePath, []byte("corrupt cached firmware"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := runner.Run(context.Background()); err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Run() error = %v, want %q", err, test.wantError)
+			}
+			for _, filePath := range []string{toolMarker, filepath.Join(runner.OutputDir, "tinfoil-deployment.json")} {
+				if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+					t.Fatalf("unverified firmware reached measurement/output %s: %v", filePath, err)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchSeparatesReleasesAndRepositoriesInCache(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, r.URL.RequestURI())
+	}))
+	defer server.Close()
+	cacheDir := t.TempDir()
+	// Ignore files left by the old basename-only cache as well.
+	if err := os.WriteFile(filepath.Join(cacheDir, "OVMF.fd"), []byte("old unscoped firmware"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := DefaultRunner()
+	runner.CacheDir = cacheDir
+	runner.Stdout = io.Discard
+	paths := map[string]bool{}
+	for _, relativeURL := range []string{"/edk2/v0.0.3/OVMF.fd", "/edk2/v0.0.4/OVMF.fd", "/other/v0.0.4/OVMF.fd", "/edk2/v0.0.4/OVMF.fd?revision=2"} {
+		for attempt := 0; attempt < 2; attempt++ {
+			filePath, err := runner.fetch(context.Background(), server.URL+relativeURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != relativeURL {
+				t.Fatalf("fetch(%s) reused different artifact %q", relativeURL, data)
+			}
+			paths[filePath] = true
+		}
+	}
+	if requests.Load() != 4 || len(paths) != 4 {
+		t.Fatalf("cache produced %d requests and %d files, want 4 of each", requests.Load(), len(paths))
 	}
 }
 
