@@ -123,6 +123,9 @@ type legacyMeasurementConfig struct {
 	Memory     int         `yaml:"memory"`
 	GPUs       int         `yaml:"gpus"`
 	Models     []yaml.Node `yaml:"models"`
+	// Declared keys need the v0.14.10 key store even on images that predate
+	// the strict validator, so the legacy path checks for them too.
+	AttestedKeys []yaml.Node `yaml:"attested-keys"`
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -291,6 +294,9 @@ func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
 		Memory:     legacy.Memory,
 		GPUs:       legacy.GPUs,
 		ModelCount: len(legacy.Models),
+	}
+	if len(legacy.AttestedKeys) > 0 {
+		return nil, fmt.Errorf("validate legacy config: attested-keys require CVM image v%s or newer (got %s)", minCVMVersionAttestedKeys, legacy.CVMVersion)
 	}
 	if err := validateMeasurementConfig(measurement); err != nil {
 		return nil, fmt.Errorf("validate legacy config: %w", err)

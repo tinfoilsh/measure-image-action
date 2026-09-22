@@ -146,6 +146,13 @@ containers:
 	if _, err := decodeMeasurementConfig(bytes.Replace(keyed, []byte("cvm-version: 0.11.0"), []byte("cvm-version: 0.14.10"), 1)); err != nil {
 		t.Fatalf("attested keys on 0.14.10 rejected: %v", err)
 	}
+	adminSSH := append([]byte("cvm-network:\n  inbound-ports: [22]\nnetworks:\n  dev:\n    egress: open\n"), bytes.Replace(strictValid, []byte("    image:"), []byte("    cvm_admin: true\n    networks: [dev]\n    ports: ['22:22']\n    image:"), 1)...)
+	if _, err := decodeMeasurementConfig(adminSSH); err == nil || !strings.Contains(err.Error(), "require CVM image v0.14.10") {
+		t.Fatalf("admin SSH on 0.11.0 error = %v, want version rejection", err)
+	}
+	if _, err := decodeMeasurementConfig(append([]byte("attested-keys:\n  - id: host-ssh\n    key: ecdsa-p256\n"), legacy...)); err == nil || !strings.Contains(err.Error(), "require CVM image v0.14.10") {
+		t.Fatalf("attested keys on legacy 0.10.9 error = %v, want version rejection", err)
+	}
 }
 
 func TestDecodeMeasurementConfigRejectsMalformedVersionAndMultipleDocuments(t *testing.T) {
