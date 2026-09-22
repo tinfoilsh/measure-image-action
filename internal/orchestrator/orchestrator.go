@@ -30,6 +30,7 @@ const (
 	componentArtifactType     = "https://tinfoil.sh/predicate/component-artifact/v1"
 	buildProvenanceType       = "https://slsa.dev/provenance/v1"
 	minCVMVersionStrictConfig = "0.11.0"
+	minCVMVersionAttestedKeys = "0.14.10"
 	baseDiskCount             = 3
 	artifactFetchAttempts     = 4
 )
@@ -122,6 +123,9 @@ type legacyMeasurementConfig struct {
 	Memory     int         `yaml:"memory"`
 	GPUs       int         `yaml:"gpus"`
 	Models     []yaml.Node `yaml:"models"`
+	// Declared keys need the v0.14.10 key store even on images that predate
+	// the strict validator, so the legacy path checks for them too.
+	AttestedKeys []yaml.Node `yaml:"attested-keys"`
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -265,6 +269,9 @@ func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("validate config: %w", err)
 		}
+		if err := validateAttestedKeysSupport(config); err != nil {
+			return nil, fmt.Errorf("validate config: %w", err)
+		}
 		measurement := &measurementConfig{
 			CVMVersion:  config.CVMVersion,
 			Source:      config.CVMSource.OrDefault(),
@@ -288,10 +295,33 @@ func decodeMeasurementConfig(configBytes []byte) (*measurementConfig, error) {
 		GPUs:       legacy.GPUs,
 		ModelCount: len(legacy.Models),
 	}
+	if len(legacy.AttestedKeys) > 0 {
+		return nil, fmt.Errorf("validate legacy config: attested-keys require CVM image v%s or newer (got %s)", minCVMVersionAttestedKeys, legacy.CVMVersion)
+	}
 	if err := validateMeasurementConfig(measurement); err != nil {
 		return nil, fmt.Errorf("validate legacy config: %w", err)
 	}
 	return measurement, nil
+}
+
+// validateAttestedKeysSupport rejects boot keys and direct admin SSH on images
+// that would only fail at guest boot, so the mismatch surfaces at measurement.
+func validateAttestedKeysSupport(config *tinfoilconfig.Config) error {
+	adminSSH, err := tinfoilconfig.AdminSSH(config)
+	if err != nil {
+		return err
+	}
+	if len(config.AttestedKeys) == 0 && adminSSH == nil {
+		return nil
+	}
+	supported, err := versionAtLeastChecked(config.CVMVersion, minCVMVersionAttestedKeys)
+	if err != nil {
+		return err
+	}
+	if !supported {
+		return fmt.Errorf("attested-keys and direct admin SSH require CVM image v%s or newer (got %s)", minCVMVersionAttestedKeys, config.CVMVersion)
+	}
+	return nil
 }
 
 func validateMeasurementConfig(config *measurementConfig) error {
