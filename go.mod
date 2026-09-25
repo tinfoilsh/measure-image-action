@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.6
 
 require (
-	github.com/tinfoilsh/tinfoil-config v0.1.13
+	github.com/tinfoilsh/tinfoil-config v0.1.14
 	gopkg.in/yaml.v3 v3.0.1
 )
 
