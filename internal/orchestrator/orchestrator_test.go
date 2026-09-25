@@ -249,6 +249,7 @@ containers:
     runtime: nvidia
     gpus: all
     cvm_admin: true
+    attestation: true
     networks: [dev]
     ports: ["22:22"]
     keys: [host-ssh]
