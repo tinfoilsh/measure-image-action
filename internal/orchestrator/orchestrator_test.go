@@ -111,7 +111,7 @@ containers:
 	if err != nil {
 		t.Fatalf("legacy config rejected: %v", err)
 	}
-	wantLegacy := &measurementConfig{CVMVersion: "0.10.9", Source: tinfoilconfig.DefaultCVMSource, CPUs: 8, Memory: 16384, GPUs: 1, ModelCount: 1}
+	wantLegacy := &measurementConfig{CVMVersion: "0.10.9", CPUs: 8, Memory: 16384, GPUs: 1, ModelCount: 1}
 	if !reflect.DeepEqual(config, wantLegacy) {
 		t.Fatalf("legacy config = %#v, want %#v", config, wantLegacy)
 	}
@@ -134,7 +134,7 @@ containers:
 	if err != nil {
 		t.Fatalf("strict config rejected: %v", err)
 	}
-	wantStrict := &measurementConfig{CVMVersion: "0.11.0", Source: tinfoilconfig.DefaultCVMSource, CPUs: 8, Memory: 16384}
+	wantStrict := &measurementConfig{CVMVersion: "0.11.0", CPUs: 8, Memory: 16384}
 	if !reflect.DeepEqual(config, wantStrict) {
 		t.Fatalf("strict config = %#v, want %#v", config, wantStrict)
 	}
@@ -208,7 +208,7 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 	manifestDigest := sha256.Sum256(manifestBytes)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/example/cvmimage/releases/download/v0.14.10/tinfoil-inference-v0.14.10-manifest.json":
+		case "/tinfoilsh/cvmimage/releases/download/v0.14.10/tinfoil-inference-v0.14.10-manifest.json":
 			_, _ = writer.Write(manifestBytes)
 		case "/images/tinfoil-inference-v0.14.10.vmlinuz":
 			_, _ = writer.Write(kernel)
@@ -223,9 +223,6 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 	defer server.Close()
 
 	configBytes := []byte(fmt.Sprintf(`cvm-version: 0.14.10@sha256:%x
-cvm-source:
-  repo: example/cvmimage
-  artifacts: %s/images
 cpus: 2
 memory: 4096
 gpus: 1
@@ -253,8 +250,8 @@ containers:
     networks: [dev]
     ports: ["22:22"]
     keys: [host-ssh]
-    volumes: [workspace:/workspace]
-`, manifestDigest, server.URL))
+    persistent_volumes: [workspace:/workspace]
+`, manifestDigest))
 	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +299,7 @@ exit 1
 		SNPMeasurePath:  snpPath,
 		TDXMeasurePath:  tdxPath,
 		GitHubBase:      server.URL,
+		ArtifactsBase:   server.URL + "/images",
 		EDK2ReleaseBase: server.URL + "/edk2",
 		EDK2SHA256:      fmt.Sprintf("%x", sha256.Sum256(ovmf)),
 		HTTPClient:      server.Client(),
@@ -314,14 +312,14 @@ exit 1
 	cachePath := func(relativeURL string) string {
 		return filepath.Join(cacheDir, fmt.Sprintf("%x", sha256.Sum256([]byte(server.URL+relativeURL))), filepath.Base(relativeURL))
 	}
-	manifestPath := cachePath("/example/cvmimage/releases/download/v0.14.10/tinfoil-inference-v0.14.10-manifest.json")
+	manifestPath := cachePath("/tinfoilsh/cvmimage/releases/download/v0.14.10/tinfoil-inference-v0.14.10-manifest.json")
 	ovmfPath := cachePath("/edk2/v0.0.4/OVMF.fd")
 	kernelPath := cachePath("/images/tinfoil-inference-v0.14.10.vmlinuz")
 	initrdPath := cachePath("/images/tinfoil-inference-v0.14.10.initrd")
 
 	assertLines(t, ghArgumentsPath, []string{
 		"attestation", "verify", manifestPath,
-		"-R", "example/cvmimage", "--deny-self-hosted-runners", "--predicate-type", "https://slsa.dev/provenance/v1",
+		"-R", runtimeRepository, "--deny-self-hosted-runners", "--predicate-type", "https://slsa.dev/provenance/v1",
 		"attestation", "verify", ovmfPath,
 		"-R", "tinfoilsh/edk2", "--deny-self-hosted-runners", "--predicate-type", "https://tinfoil.sh/predicate/component-artifact/v1",
 	})
@@ -443,7 +441,7 @@ exit 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRelease := fmt.Sprintf("SEV-SNP Measurement: `%s`\nTDX Measurement: `{'rtmr1': '1111', 'rtmr2': '2222'}`\nInference Image Version: [`0.14.10`](https://github.com/example/cvmimage/releases/tag/v0.14.10)\n", strings.Repeat("a", 96))
+	wantRelease := fmt.Sprintf("SEV-SNP Measurement: `%s`\nTDX Measurement: `{'rtmr1': '1111', 'rtmr2': '2222'}`\nInference Image Version: [`0.14.10`](https://github.com/tinfoilsh/cvmimage/releases/tag/v0.14.10)\n", strings.Repeat("a", 96))
 	if string(releaseBytes) != wantRelease {
 		t.Fatalf("release.md = %q, want %q", releaseBytes, wantRelease)
 	}
@@ -524,7 +522,7 @@ func TestRunRejectsUnverifiedFirmwareBeforeMeasurement(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			config := fmt.Sprintf("cvm-version: 0.14.10\ncvm-source:\n  repo: example/cvmimage\n  artifacts: %s/images\ncpus: 2\nmemory: 4096\nshim:\n  upstream-port: 8080\ncontainers:\n  - name: app\n    image: example.com/app@sha256:%s\n", server.URL, strings.Repeat("a", 64))
+			config := fmt.Sprintf("cvm-version: 0.14.10\ncpus: 2\nmemory: 4096\nshim:\n  upstream-port: 8080\ncontainers:\n  - name: app\n    image: example.com/app@sha256:%s\n", strings.Repeat("a", 64))
 			runner := DefaultRunner()
 			runner.ConfigPath = filepath.Join(temporaryDir, "config.yml")
 			if err := os.WriteFile(runner.ConfigPath, []byte(config), 0o600); err != nil {
@@ -532,6 +530,7 @@ func TestRunRejectsUnverifiedFirmwareBeforeMeasurement(t *testing.T) {
 			}
 			runner.CacheDir = filepath.Join(temporaryDir, "cache")
 			runner.OutputDir = filepath.Join(temporaryDir, "output")
+			runner.ArtifactsBase = server.URL + "/images"
 			runner.GitHubBase = server.URL
 			runner.EDK2ReleaseBase = server.URL + "/edk2"
 			runner.EDK2SHA256 = fmt.Sprintf("%x", sha256.Sum256(ovmf))
