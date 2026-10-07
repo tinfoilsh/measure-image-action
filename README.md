@@ -46,10 +46,6 @@ direct admin SSH opt-in (`cvm_admin` with `22:22` and `cvm-network.inbound-ports
 `[22]`) are measured exactly as written; they require CVM image v0.14.10 or
 newer and are rejected on older images.
 
-For v0.11.0 and newer, `cvm-source` in the config selects the repository whose
-release carries the image manifest and the base URL serving its kernel and
-initrd. Without it, and for older images, the action uses `tinfoilsh/cvmimage`
-and `https://images.tinfoil.sh/cvm`.
 
 ## AMD firmware
 
