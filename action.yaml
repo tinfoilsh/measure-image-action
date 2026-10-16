@@ -1,5 +1,5 @@
-name: Tinfoil Private Inference Build Action
-description: Builds, attests, and publishes a private inference deployment.
+name: Tinfoil Measure Image Action
+description: Builds, attests, and publishes a Tinfoil deployment.
 
 author: Tinfoil
 

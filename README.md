@@ -1,4 +1,4 @@
-# Tinfoil Private Inference Builder
+# Tinfoil Measure Image Action
 
 ## GitHub Actions Example
 
