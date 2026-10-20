@@ -37,8 +37,9 @@ the measurement boundary and output format stable while making the action's
 orchestration easier to inspect and test.
 
 The shared strict workload validator applies to CVM image v0.11.0 and newer,
-matching tinfoild's launch contract. Older CVM images retain their legacy YAML
-surface and are parsed only for the fields required to reproduce measurement.
+matching the launch contract that Tinfoil hosts enforce. Older CVM images
+retain their legacy YAML surface and are parsed only for the fields required to
+reproduce measurement.
 The emitted `vm_shape.disks` includes the three runtime disks plus one disk for
 each top-level model and volume. The signed deployment carries the config bytes
 verbatim, so `attested-keys` declarations, container `keys` grants and the
@@ -50,8 +51,8 @@ newer and are rejected on older images.
 ## AMD firmware
 
 The signed deployment records AMD OVMF's `type`, `version`, and `sha256`
-under `firmware.sev_snp` (currently EDK2 v0.0.4). Upgrade `tinfoild` before
-deploying these releases. TDX firmware selection is unchanged.
+under `firmware.sev_snp` (currently EDK2 v0.0.4). Hosts must support this record
+before they can deploy these releases. TDX firmware selection is unchanged.
 
 ## Releasing a New Version
 
