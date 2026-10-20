@@ -226,6 +226,8 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 cpus: 2
 memory: 4096
 gpus: 1
+security:
+  allow-unencrypted-nvlink: true
 cvm-network:
   inbound-ports: [22]
 attested-keys:
