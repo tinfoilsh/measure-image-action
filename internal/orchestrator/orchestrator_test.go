@@ -204,7 +204,7 @@ func TestRunPreservesMeasurementContract(t *testing.T) {
 	kernel := []byte("kernel fixture")
 	initrd := []byte("initrd fixture")
 	ovmf := []byte("ovmf fixture\x00\xff")
-	manifestBytes := []byte(fmt.Sprintf(`{"version":"0.14.10","root":"root-hash","initrd":"%x","kernel":"%x","raw":"raw-hash"}`, sha256.Sum256(initrd), sha256.Sum256(kernel)))
+	manifestBytes := []byte(fmt.Sprintf(`{"version":"v0.14.10","root":"root-hash","initrd":"%x","kernel":"%x","raw":"raw-hash"}`, sha256.Sum256(initrd), sha256.Sum256(kernel)))
 	manifestDigest := sha256.Sum256(manifestBytes)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -322,6 +322,7 @@ exit 1
 	assertLines(t, ghArgumentsPath, []string{
 		"attestation", "verify", manifestPath,
 		"-R", runtimeRepository, "--deny-self-hosted-runners", "--predicate-type", "https://slsa.dev/provenance/v1",
+		"--source-ref", "refs/tags/v0.14.10", "--signer-workflow", "tinfoilsh/cvmimage/.github/workflows/release.yml",
 		"attestation", "verify", ovmfPath,
 		"-R", "tinfoilsh/edk2", "--deny-self-hosted-runners", "--predicate-type", "https://tinfoil.sh/predicate/component-artifact/v1",
 	})
@@ -489,13 +490,15 @@ containers:
 
 func TestRunRejectsUnverifiedFirmwareBeforeMeasurement(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		missing      bool
-		badSignature bool
-		wrongDigest  bool
-		corruptCache bool
-		wantError    string
+		name            string
+		manifestVersion string
+		missing         bool
+		badSignature    bool
+		wrongDigest     bool
+		corruptCache    bool
+		wantError       string
 	}{
+		{name: "manifest of another runtime release", manifestVersion: "v0.14.9", wantError: `cvm manifest is for version "v0.14.9", not the requested "v0.14.10"`},
 		{name: "unavailable release", missing: true, wantError: "HTTP 404"},
 		{name: "failed attestation", badSignature: true, wantError: "attestation verification failed"},
 		{name: "download differs from pin", wrongDigest: true, wantError: "SEV-SNP OVMF digest mismatch"},
@@ -504,7 +507,11 @@ func TestRunRejectsUnverifiedFirmwareBeforeMeasurement(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			temporaryDir := t.TempDir()
 			kernel, initrd, ovmf := []byte("kernel"), []byte("initrd"), []byte("ovmf")
-			manifestBytes := []byte(fmt.Sprintf(`{"root":"root","kernel":"%x","initrd":"%x"}`, sha256.Sum256(kernel), sha256.Sum256(initrd)))
+			manifestVersion := "v0.14.10"
+			if test.manifestVersion != "" {
+				manifestVersion = test.manifestVersion
+			}
+			manifestBytes := []byte(fmt.Sprintf(`{"version":%q,"root":"root","kernel":"%x","initrd":"%x"}`, manifestVersion, sha256.Sum256(kernel), sha256.Sum256(initrd)))
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch filepath.Base(r.URL.Path) {
 				case "tinfoil-inference-v0.14.10-manifest.json":
