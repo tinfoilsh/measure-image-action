@@ -38,7 +38,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir output
           docker run --rm \
             --cap-drop=ALL \
             --security-opt=no-new-privileges \
