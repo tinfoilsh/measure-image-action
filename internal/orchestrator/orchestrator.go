@@ -26,7 +26,7 @@ import (
 
 const (
 	runtimeRepository         = "tinfoilsh/cvmimage"
-	runtimeReleaseWorkflow    = runtimeRepository + "/.github/workflows/release.yml"
+	runtimeReleaseIdentity    = "https://github.com/" + runtimeRepository + "/.github/workflows/release.yml@refs/tags/"
 	runtimeReleaseTagPrefix   = "v"
 	runtimeArtifactsURL       = "https://images.tinfoil.sh/cvm"
 	defaultEDK2Version        = "v0.0.4"
@@ -153,7 +153,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// tag, not from any other build of the runtime repository.
 	runtimeTag := runtimeReleaseTagPrefix + cvmVersion
 	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, runtimeRepository, buildProvenanceType,
-		"--source-ref", "refs/tags/"+runtimeTag, "--signer-workflow", runtimeReleaseWorkflow)
+		"--cert-identity", runtimeReleaseIdentity+runtimeTag)
 	if err != nil {
 		return err
 	}
