@@ -68,7 +68,7 @@ runs:
           -v "$(pwd)/output":/output \
           -v "${{ inputs.config-file }}":/config.yml:ro \
           -e GH_TOKEN=${{ inputs.github-token }} \
-        ghcr.io/tinfoilsh/measure-image-action@sha256:ab7333339dc4963513681652ba0548bead529095efc7b0c1296792f40f3a158f
+        ghcr.io/tinfoilsh/measure-image-action@sha256:85306e3ab312a2d80466e901081e855cc53f21c4802c638f861e6ef31ba4f5d1
 
     - name: Fix output permissions
       shell: bash
