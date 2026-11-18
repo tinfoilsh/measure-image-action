@@ -1,0 +1,8 @@
+cvm-version: 0.14.19
+cpus: 2
+memory: 4096
+shim:
+  upstream-port: 8080
+containers:
+  - name: app
+    image: example.com/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

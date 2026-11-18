@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  attestations: read
 
 jobs:
   test:
@@ -30,3 +31,23 @@ jobs:
 
       - name: Build container
         run: docker build --tag measure-image-action:test .
+
+      # The unit tests stub the GitHub CLI, so this runs the container's own
+      # tools against published artifacts.
+      - name: Measure a sample config with the built container
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir output
+          docker run --rm \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --read-only \
+            --tmpfs /tmp \
+            --tmpfs /cache \
+            --tmpfs /root/.cache \
+            -v "$(pwd)/output":/output \
+            -v "$(pwd)/testdata/smoke-config.yml":/config.yml:ro \
+            -e GH_TOKEN \
+            measure-image-action:test
+          sudo test -s output/tinfoil-deployment.json
