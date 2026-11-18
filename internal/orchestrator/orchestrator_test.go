@@ -322,7 +322,7 @@ exit 1
 	assertLines(t, ghArgumentsPath, []string{
 		"attestation", "verify", manifestPath,
 		"-R", runtimeRepository, "--deny-self-hosted-runners", "--predicate-type", "https://slsa.dev/provenance/v1",
-		"--source-ref", "refs/tags/v0.14.10", "--signer-workflow", "tinfoilsh/cvmimage/.github/workflows/release.yml",
+		"--cert-identity", "https://github.com/tinfoilsh/cvmimage/.github/workflows/release.yml@refs/tags/v0.14.10",
 		"attestation", "verify", ovmfPath,
 		"-R", "tinfoilsh/edk2", "--deny-self-hosted-runners", "--predicate-type", "https://tinfoil.sh/predicate/component-artifact/v1",
 	})
