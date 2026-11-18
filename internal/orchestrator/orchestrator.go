@@ -26,6 +26,8 @@ import (
 
 const (
 	runtimeRepository         = "tinfoilsh/cvmimage"
+	runtimeReleaseWorkflow    = runtimeRepository + "/.github/workflows/release.yml"
+	runtimeReleaseTagPrefix   = "v"
 	runtimeArtifactsURL       = "https://images.tinfoil.sh/cvm"
 	defaultEDK2Version        = "v0.0.4"
 	defaultEDK2SHA256         = "78c890175928167a1bc095d4bf3bb4ad81de80cd7e4e9e683477fc359119c1c4"
@@ -77,9 +79,10 @@ func DefaultRunner() *Runner {
 }
 
 type manifest struct {
-	Root   string `json:"root"`
-	Initrd string `json:"initrd"`
-	Kernel string `json:"kernel"`
+	Version string `json:"version"`
+	Root    string `json:"root"`
+	Initrd  string `json:"initrd"`
+	Kernel  string `json:"kernel"`
 }
 
 type vmShape struct {
@@ -146,7 +149,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("parse cvm-version: %w", err)
 	}
 	manifestURL := fmt.Sprintf("%s/%s/releases/download/v%s/tinfoil-inference-v%s-manifest.json", strings.TrimRight(r.GitHubBase, "/"), runtimeRepository, cvmVersion, cvmVersion)
-	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, runtimeRepository, buildProvenanceType)
+	// The manifest must come from the release workflow run for this version's
+	// tag, not from any other build of the runtime repository.
+	runtimeTag := runtimeReleaseTagPrefix + cvmVersion
+	manifestPath, err := r.fetchVerifiedArtifact(ctx, manifestURL, runtimeRepository, buildProvenanceType,
+		"--source-ref", "refs/tags/"+runtimeTag, "--signer-workflow", runtimeReleaseWorkflow)
 	if err != nil {
 		return err
 	}
@@ -167,6 +174,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	if hashes.Root == "" || hashes.Kernel == "" || hashes.Initrd == "" {
 		return errors.New("parse cvm manifest: root, kernel, and initrd are required")
+	}
+	if hashes.Version != runtimeTag {
+		return fmt.Errorf("cvm manifest is for version %q, not the requested %q", hashes.Version, runtimeTag)
 	}
 
 	artifacts := strings.TrimRight(r.ArtifactsBase, "/")
@@ -384,12 +394,15 @@ func versionAtLeastChecked(version, minimum string) (bool, error) {
 	return patch >= minimumPatch, nil
 }
 
-func (r *Runner) fetchVerifiedArtifact(ctx context.Context, artifactURL, repository, predicateType string) (string, error) {
+// fetchVerifiedArtifact downloads an artifact and verifies its attestation.
+// identity holds further gh constraints on who may have produced it.
+func (r *Runner) fetchVerifiedArtifact(ctx context.Context, artifactURL, repository, predicateType string, identity ...string) (string, error) {
 	filePath, err := r.fetch(ctx, artifactURL)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, r.GHPath, "attestation", "verify", filePath, "-R", repository, "--deny-self-hosted-runners", "--predicate-type", predicateType)
+	arguments := append([]string{"attestation", "verify", filePath, "-R", repository, "--deny-self-hosted-runners", "--predicate-type", predicateType}, identity...)
+	cmd := exec.CommandContext(ctx, r.GHPath, arguments...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("attestation verification failed for %s: %s: %w", filePath, strings.TrimSpace(string(output)), err)
